@@ -94,6 +94,7 @@ curl -X POST https://<tunnel-domain>/fetch \
 - Go 1.21+（cloudflared ビルド用）
 - Android NDK r27+（cloudflared クロスコンパイル用）
 - 実機またはエミュレータ（ARM64）
+- Cloudflare アカウント（無料プランで可）
 
 ### 1. リポジトリのクローン
 
@@ -160,21 +161,54 @@ cd chrome-bridge-android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### 6. アプリの設定
+### 6. Cloudflare Tunnel の作成
+
+Cloudflare Zero Trust ダッシュボードからトンネルを作成する。
+ダッシュボードから作成したトンネルはトークン方式で管理され、アプリにトークンを入力するだけで接続できる。
+
+#### 6-1. トンネルの作成
+
+1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) にログイン
+2. **Networks** → **Connectors** → **Create a tunnel**
+3. **Cloudflared** を選択 → **Next**
+4. トンネル名を入力（例: `chrome-bridge`）→ **Save tunnel**
+5. トークン（`eyJ...` 形式の文字列）が表示されるのでコピーしておく → **Next**
+
+#### 6-2. Public Hostname の設定
+
+トンネル作成の続きで、または既存トンネルの Configure → Public Hostname タブで設定する。
+
+1. **Add a public hostname** をクリック
+2. 以下を入力:
+   - **Subdomain**: 任意（例: `bridge`）
+   - **Domain**: Cloudflare で管理しているドメインを選択
+   - **Type**: `HTTP`
+   - **URL**: `localhost:3000`
+3. **Save hostname**
+
+これにより `https://<subdomain>.<domain>` へのリクエストがアプリの HTTP サーバーに転送される。
+
+> **補足**: CLI（`cloudflared tunnel create`）で作成したトンネルは「ローカル管理型」となり、
+> ダッシュボードから Public Hostname を設定できない。アプリのトークン方式で利用するには
+> ダッシュボードから作成することを推奨する。
+
+#### 6-3. DNS レコードの確認
+
+Public Hostname を設定すると、Cloudflare DNS に CNAME レコードが自動作成される。
+手動で確認・修正する場合:
+
+1. Cloudflare ダッシュボード（メインサイト）→ 対象ドメイン → **DNS** → **Records**
+2. Tunnel タイプのレコードが作成されていることを確認
+3. Content が正しいトンネル名を指していることを確認
+
+### 7. アプリの設定
 
 1. アプリを起動するとサーバーが自動起動する
 2. **Port**: デフォルト 3000（必要に応じて変更）
 3. **API Key**: 任意の文字列を設定（外部アクセス時の認証に使用）
-4. **Tunnel Token**: Cloudflare Zero Trust ダッシュボードで取得したトークンを入力
+4. **Tunnel Token**: 手順 6-1 で取得したトークンを入力
 5. **Tunnel Domain**: Tunnel に紐づくドメイン名を入力（表示用）
 6. 「接続」ボタンで Tunnel を開始
-
-### 7. Cloudflare Tunnel トークンの取得
-
-1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) にログイン
-2. Networks → Tunnels → 対象の Tunnel を選択
-3. 「Configure」→ 「Install and run a connector」セクションで表示されるトークンをコピー
-   （`cloudflared service install` の後ろにある `eyJ...` 形式の文字列）
 
 ### 8. 動作確認
 

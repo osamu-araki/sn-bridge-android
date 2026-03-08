@@ -512,8 +512,8 @@
             <div class="mock-card-title">設定</div>
             <div class="mock-label">Port</div>
             <div class="mock-input">3000</div>
-            <div class="mock-label">API Key</div>
-            <div class="mock-input" style="color:#999;">********</div>
+            <div class="mock-label">API Key <span style="font-size:9px;color:var(--gray);margin-left:4px;">&#128065; 表示/非表示</span></div>
+            <div class="mock-input" style="color:#999;display:flex;align-items:center;justify-content:space-between;">******** <span style="font-size:10px;color:var(--gray);">&#9673;</span></div>
             <div class="mock-note">※ 反映にはサーバーの再起動が必要です</div>
             <div style="text-align:right;margin-top:6px;">
               <span class="mock-btn btn-teal">設定を保存</span>
@@ -532,7 +532,7 @@
             <div class="mock-input" style="color:#999;">********</div>
             <div class="mock-label">Tunnel Domain（表示用）</div>
             <div class="mock-input">bridge.salesnow-cs.jp</div>
-            <div class="mock-note">※ Token は cloudflared tunnel token &lt;name&gt; で取得</div>
+            <div class="mock-note">※ Token は Zero Trust ダッシュボードでトンネル作成時に取得</div>
             <div style="text-align:right;margin-top:6px;">
               <span class="mock-btn btn-teal">Tunnel 設定を保存</span>
             </div>
@@ -581,7 +581,7 @@
           <div class="anno-title"><span class="anno-num">3</span>設定</div>
           <div class="anno-desc">
             <strong>Port</strong>: HTTP サーバーのリッスンポート（デフォルト 3000）。<br>
-            <strong>API Key</strong>: Bearer Token 認証用。未設定時は localhost のみ許可。<br>
+            <strong>API Key</strong>: Bearer Token 認証用。目のアイコンで表示/非表示を切替。未設定時は localhost のみ許可。<br>
             変更後は「設定を保存」→ サーバー再起動で反映。
           </div>
         </div>
@@ -589,10 +589,10 @@
         <div class="anno-item">
           <div class="anno-title"><span class="anno-num">4</span>Tunnel セクション</div>
           <div class="anno-desc">
-            <strong>Tunnel Token</strong>: <code style="font-size:11px;background:#EDF7F7;padding:1px 4px;border-radius:3px;">cloudflared tunnel token &lt;name&gt;</code> で取得したトークンを入力。<br>
-            <strong>Tunnel Domain</strong>: 表示用のドメイン名（ingress ルールにも使用）。<br>
+            <strong>Tunnel Token</strong>: Cloudflare Zero Trust ダッシュボードでトンネルを作成し、表示されるトークンを入力。<br>
+            <strong>Tunnel Domain</strong>: 表示用のドメイン名（Public Hostname で設定したサブドメイン）。<br>
             サーバー稼働中のみ「接続」ボタンが有効。<br>
-            接続すると cloudflared プロセスが起動し、Cloudflare Edge と http2 で接続。
+            接続すると cloudflared プロセスが起動し、Cloudflare Edge と QUIC/http2 で接続。
           </div>
         </div>
 
@@ -628,14 +628,15 @@
       &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">HeadlessWebViewFetcher.kt</span> <span class="comment">— WebView ページ取得</span><br>
       &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">JsExtractors.kt</span> <span class="comment">— extractText / extractDom の JS</span><br>
       &nbsp;&nbsp;<span class="dir">tunnel/</span><br>
-      &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">TunnelManager.kt</span> <span class="comment">— cloudflared プロセス管理</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">TunnelManager.kt</span> <span class="comment">— cloudflared プロセス管理（トークン方式）</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">DnsProxy.kt</span> <span class="comment">— DNS プロキシ（エミュレータ用、実機では未使用）</span><br>
       &nbsp;&nbsp;<span class="dir">service/</span><br>
       &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">BridgeForegroundService.kt</span> <span class="comment">— バックグラウンド維持</span><br>
       &nbsp;&nbsp;<span class="dir">data/</span><br>
       &nbsp;&nbsp;&nbsp;&nbsp;<span class="file">SettingsRepository.kt</span> <span class="comment">— SharedPreferences 管理</span><br>
       <br>
       <span class="dir">app/src/main/jniLibs/arm64-v8a/</span><br>
-      &nbsp;&nbsp;<span class="file">libcloudflared.so</span> <span class="comment">— cloudflared Linux ARM64 バイナリ (36MB)</span>
+      &nbsp;&nbsp;<span class="file">libcloudflared.so</span> <span class="comment">— cloudflared ARM64 バイナリ (CGO_ENABLED=1, 約27MB)</span>
     </div>
   </div>
 </section>
@@ -645,22 +646,63 @@
   <h2>Tunnel の仕組み（技術詳細）</h2>
   <div class="card">
     <h3>cloudflared の同梱方法</h3>
-    <p>Go でビルドされた cloudflared Linux ARM64 バイナリを <code>jniLibs/arm64-v8a/libcloudflared.so</code> として APK に同梱。AGP が <code>nativeLibraryDir</code> に展開し、SELinux の <code>execute</code> が許可された領域に配置されます。</p>
+    <p>Go + Android NDK（<code>CGO_ENABLED=1</code>）でビルドした cloudflared ARM64 バイナリを <code>jniLibs/arm64-v8a/libcloudflared.so</code> として APK に同梱。AGP が <code>nativeLibraryDir</code> に展開し、SELinux の <code>execute</code> が許可された領域に配置されます。</p>
 
     <h3>起動オプション</h3>
     <ul>
+      <li><code>--token &lt;TOKEN&gt; run</code>: ダッシュボードで作成したトンネルにトークン方式で接続</li>
       <li><code>--protocol http2</code>: QUIC を回避（SELinux の netlink_route_socket 制限対策）</li>
-      <li><code>--config config.yml</code>: ingress ルールを動的生成して指定（トークンのみだと 503）</li>
       <li><code>--no-autoupdate</code>: 自動更新を無効化</li>
       <li><code>HOME=filesDir</code>: cloudflared の作業ディレクトリをアプリ領域に設定</li>
     </ul>
 
-    <h3>DNS 対策</h3>
-    <p>Go の DNS リゾルバは <code>/etc/resolv.conf</code> を参照しますが、Android には存在しません。<code>ConnectivityManager</code> から DNS サーバーアドレスを取得し、<code>filesDir/resolv.conf</code> を生成。さらに <code>/etc</code> への bind mount を試みます（root 環境のみ成功）。実デバイスでは通常問題なく動作します。</p>
+    <h3>DNS 対策（CGO ビルド）</h3>
+    <p>Go のデフォルト DNS リゾルバは <code>/etc/resolv.conf</code> を参照しますが、Android には存在せず、フォールバック先の <code>[::1]:53</code> / <code>127.0.0.1:53</code> もポート 53 が特権ポート（<code>ip_unprivileged_port_start=1024</code>）のため非 root では使えません。</p>
+    <p style="margin-top:8px;"><strong>解決策:</strong> <code>CGO_ENABLED=1</code> + Android NDK clang でクロスコンパイルすると、Go が C ライブラリの <code>getaddrinfo()</code> を使うようになり、Android のシステム DNS リゾルバ経由で名前解決が行われます。</p>
+    <p style="margin-top:8px;font-size:12px;color:var(--gray);">ビルドコマンド: <code>CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=aarch64-linux-android26-clang go build</code></p>
   </div>
 </section>
 
-<!-- ━━━━ 8. API 仕様 ━━━━ -->
+<!-- ━━━━ 8. Tunnel セットアップ ━━━━ -->
+<section>
+  <h2>Cloudflare Tunnel セットアップ</h2>
+  <div class="card">
+    <p>Cloudflare Zero Trust ダッシュボードからトンネルを作成する。ダッシュボードで作成したトンネルは<strong>トークン方式</strong>で管理され、アプリにトークンを入力するだけで接続できる。</p>
+    <p style="margin-top:6px;font-size:12px;color:var(--teal);">※ Cloudflare Tunnel は無料プラン（Free）で利用可能。帯域・リクエスト数の制限なし。</p>
+  </div>
+
+  <div class="card">
+    <h3>1. トンネルの作成</h3>
+    <ul>
+      <li><a href="https://one.dash.cloudflare.com/" style="color:var(--teal);">Cloudflare Zero Trust</a> にログイン</li>
+      <li><strong>Networks</strong> → <strong>Connectors</strong> → <strong>Create a tunnel</strong></li>
+      <li><strong>Cloudflared</strong> を選択 → トンネル名を入力（例: <code>chrome-bridge</code>）</li>
+      <li>表示されるトークン（<code>eyJ...</code> 形式）をコピー</li>
+    </ul>
+
+    <h3 style="margin-top:16px;">2. Public Hostname の設定</h3>
+    <ul>
+      <li>トンネル作成の続き、または既存トンネルの <strong>Configure</strong> → <strong>Public Hostname</strong> タブ</li>
+      <li><strong>Add a public hostname</strong> をクリック</li>
+      <li><strong>Subdomain</strong>: 任意（例: <code>bridge</code>）、<strong>Domain</strong>: 管理しているドメインを選択</li>
+      <li><strong>Type</strong>: <code>HTTP</code>、<strong>URL</strong>: <code>localhost:3000</code></li>
+      <li><strong>Save hostname</strong> で保存</li>
+    </ul>
+
+    <h3 style="margin-top:16px;">3. アプリでの接続</h3>
+    <ul>
+      <li>アプリの <strong>Tunnel Token</strong> にトークンを入力</li>
+      <li><strong>Tunnel Domain</strong> にサブドメイン（例: <code>bridge.example.com</code>）を入力</li>
+      <li>「接続」ボタンをタップ → Cloudflare Edge に接続</li>
+    </ul>
+  </div>
+
+  <div class="card" style="background:#FFF8E1;border-left:4px solid #F4A15D;">
+    <p style="font-size:13px;"><strong>注意:</strong> CLI（<code>cloudflared tunnel create</code>）で作成したトンネルは「ローカル管理型」となり、ダッシュボードから Public Hostname を設定できません。アプリのトークン方式で利用するにはダッシュボードから作成してください。</p>
+  </div>
+</section>
+
+<!-- ━━━━ 9. API 仕様 ━━━━ -->
 <section>
   <h2>API 仕様（macOS 版と完全互換）</h2>
   <div class="card" style="padding:12px;">
