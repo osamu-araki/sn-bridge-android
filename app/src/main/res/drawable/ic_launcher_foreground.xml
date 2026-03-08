@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- CB ロゴ: シンプルな橋のアイコン -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,60 L40,40 L54,40 L54,60 L54,40 L68,40 L78,60 M36,55 L72,55"
+        android:strokeWidth="3"
+        android:strokeColor="#FFFFFF"
+        android:fillType="nonZero"/>
+    <path
+        android:pathData="M34,62 C34,62 54,50 74,62"
+        android:strokeWidth="3"
+        android:strokeColor="#FFFFFF"
+        android:fillColor="#00000000"/>
+</vector>

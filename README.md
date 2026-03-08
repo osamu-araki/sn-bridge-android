@@ -1,0 +1,236 @@
+# Chrome Bridge Android
+
+Android 端末上で HTTP サーバー + WebView ページ取得 + Cloudflare Tunnel を提供するアプリ。
+外部クライアント（n8n / GAS / curl 等）から `POST /fetch` でページ内容を取得できる。
+
+## 構成
+
+```
+Chrome Bridge Android
+├── BridgeHttpServer (NanoHTTPd)    … HTTP API サーバー
+├── HeadlessWebViewFetcher          … WebView によるページ取得
+├── BridgeForegroundService         … バックグラウンド維持
+├── TunnelManager + DnsProxy        … cloudflared プロセス管理
+└── UI (Jetpack Compose)            … 設定・ログ表示
+```
+
+## API 仕様
+
+### `POST /fetch`
+
+ページを取得してテキストまたは DOM 構造を返す。
+
+```bash
+curl -X POST https://<tunnel-domain>/fetch \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com", "mode":"text", "wait":3}'
+```
+
+**リクエストパラメータ:**
+
+| パラメータ | 型 | 必須 | デフォルト | 説明 |
+|-----------|-----|------|-----------|------|
+| url | string | はい | - | 取得対象の URL |
+| mode | string | いいえ | "text" | "text" または "dom" |
+| wait | int | いいえ | 3 | ページ読み込み後の待機秒数 |
+| max_length | int | いいえ | 50000 | テキストの最大文字数 |
+| timeout | int | いいえ | 30 | タイムアウト秒数 |
+
+**レスポンス例（text モード）:**
+
+```json
+{
+  "ok": true,
+  "mode": "text",
+  "url": "https://example.com",
+  "final_url": "https://example.com/",
+  "title": "Example Domain",
+  "text": "Example Domain\nThis domain is for use in...",
+  "length": 129,
+  "elapsed_ms": 3076
+}
+```
+
+**レスポンス例（dom モード）:**
+
+```json
+{
+  "ok": true,
+  "mode": "dom",
+  "url": "https://ja.wikipedia.org/wiki/東京都",
+  "title": "東京都 - Wikipedia",
+  "text": "...",
+  "length": 1503,
+  "elapsed_ms": 7263,
+  "dom": {
+    "meta": {...},
+    "headings": [{"level": 1, "text": "東京都"}, ...],
+    "links": [...],
+    "tables": [...],
+    "images": [...]
+  }
+}
+```
+
+### `GET /status`
+
+サーバーの状態を返す。
+
+```json
+{
+  "webview_ready": true,
+  "pending_requests": 0,
+  "uptime_seconds": 3593
+}
+```
+
+## セットアップ手順
+
+### 前提条件
+
+- macOS（ビルド環境）
+- Android Studio + Android SDK（API 26 以上）
+- Go 1.21+（cloudflared ビルド用）
+- Android NDK r27+（cloudflared クロスコンパイル用）
+- 実機またはエミュレータ（ARM64）
+
+### 1. リポジトリのクローン
+
+```bash
+git clone https://github.com/salesnow-cs/chrome-bridge-android.git
+cd chrome-bridge-android
+```
+
+### 2. Android SDK / NDK のインストール
+
+Android Studio がインストール済みであれば SDK は自動的に配置される。
+NDK は以下で追加インストール:
+
+```bash
+# SDK Manager で NDK をインストール
+sdkmanager "ndk;27.0.12077973"
+```
+
+### 3. cloudflared バイナリのビルド
+
+Android の非 root 環境では Go のネイティブ DNS リゾルバが動作しないため、
+`CGO_ENABLED=1` でビルドして Android のシステム DNS を使わせる必要がある。
+
+```bash
+# Go のインストール（未インストールの場合）
+brew install go
+
+# cloudflared ソースの取得
+cd /tmp
+git clone --depth 1 --branch 2026.2.0 https://github.com/cloudflare/cloudflared.git cloudflared-src
+
+# Android ARM64 向けにクロスコンパイル
+export NDK_ROOT="$HOME/Library/Android/sdk/ndk/27.0.12077973"
+export CC="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
+export CXX="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang++"
+
+cd /tmp/cloudflared-src
+CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$CC CXX=$CXX \
+  go build -o /tmp/cloudflared-android -ldflags="-s -w" ./cmd/cloudflared
+
+# プロジェクトに配置
+mkdir -p <project>/app/src/main/jniLibs/arm64-v8a/
+cp /tmp/cloudflared-android <project>/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+```
+
+> **重要**: `CGO_ENABLED=0`（デフォルト）でビルドすると、Go の純粋 DNS リゾルバが
+> `/etc/resolv.conf` を参照するが、Android には存在しないため DNS 解決に失敗する。
+> `CGO_ENABLED=1` + NDK clang で動的リンクすると `getaddrinfo()` 経由で Android の
+> システム DNS が使われる。
+
+### 4. APK のビルド
+
+```bash
+cd chrome-bridge-android
+./gradlew assembleDebug
+```
+
+出力先: `app/build/outputs/apk/debug/app-debug.apk`
+
+### 5. 実機へのインストール
+
+```bash
+# USB デバッグを有効にした端末を接続
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+### 6. アプリの設定
+
+1. アプリを起動するとサーバーが自動起動する
+2. **Port**: デフォルト 3000（必要に応じて変更）
+3. **API Key**: 任意の文字列を設定（外部アクセス時の認証に使用）
+4. **Tunnel Token**: Cloudflare Zero Trust ダッシュボードで取得したトークンを入力
+5. **Tunnel Domain**: Tunnel に紐づくドメイン名を入力（表示用）
+6. 「接続」ボタンで Tunnel を開始
+
+### 7. Cloudflare Tunnel トークンの取得
+
+1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) にログイン
+2. Networks → Tunnels → 対象の Tunnel を選択
+3. 「Configure」→ 「Install and run a connector」セクションで表示されるトークンをコピー
+   （`cloudflared service install` の後ろにある `eyJ...` 形式の文字列）
+
+### 8. 動作確認
+
+```bash
+# ローカル（同一ネットワーク内）
+curl http://<Android IP>:3000/status
+
+# Tunnel 経由
+curl https://<tunnel-domain>/status
+
+# ページ取得テスト
+curl -X POST https://<tunnel-domain>/fetch \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","mode":"text"}'
+```
+
+## バックグラウンド動作
+
+- Foreground Service により、アプリを閉じてもサーバーと Tunnel は維持される
+- 通知バーに「Chrome Bridge」が表示されている間は稼働中
+- **バッテリー最適化の除外**（推奨）: 端末の設定 → バッテリー → Chrome Bridge を「制限なし」に設定
+
+## 技術詳細
+
+| 項目 | 値 |
+|------|-----|
+| 最小 API レベル | 26 (Android 8.0) |
+| ターゲット API | 35 |
+| HTTP サーバー | NanoHTTPd 2.3.1 |
+| ページ取得 | Android WebView + evaluateJavascript |
+| Tunnel | cloudflared (CGO_ENABLED=1 ビルド) |
+| UI | Jetpack Compose + Material 3 |
+| レート制限 | 20 req/min per IP |
+| キュー上限 | 10 件 |
+
+## ファイル構成
+
+```
+app/src/main/java/jp/salesnow/chromebridge/
+├── MainActivity.kt                    # エントリーポイント
+├── ui/
+│   ├── MainScreen.kt                  # Compose UI
+│   └── theme/Theme.kt                 # SalesNow ブランドカラー
+├── server/
+│   ├── BridgeHttpServer.kt            # NanoHTTPd サーバー
+│   ├── AuthMiddleware.kt              # Bearer Token 認証
+│   └── RateLimiter.kt                 # レート制限
+├── fetcher/
+│   ├── HeadlessWebViewFetcher.kt      # WebView ページ取得
+│   └── JsExtractors.kt               # extractText/extractDom JS
+├── service/
+│   └── BridgeForegroundService.kt     # Foreground Service
+├── tunnel/
+│   ├── TunnelManager.kt               # cloudflared プロセス管理
+│   └── DnsProxy.kt                    # DNS プロキシ（エミュレータ用）
+└── data/
+    └── SettingsRepository.kt           # SharedPreferences 管理
+```

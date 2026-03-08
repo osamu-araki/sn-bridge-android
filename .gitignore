@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+!gradle-wrapper.jar
+
+# Android Studio
+*.iml
+.idea/
+local.properties
+
+# APK
+*.apk
+*.ap_
+*.aab
+
+# Build output
+app/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# cloudflared バイナリ（27MB、Git LFS 未使用時は除外）
+# ビルド手順は README を参照
+app/src/main/jniLibs/arm64-v8a/libcloudflared.so
