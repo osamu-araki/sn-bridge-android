@@ -1,12 +1,17 @@
-// Version: 1.2.0 | Updated: 2026-03-08
+// Version: 1.6.0 | Updated: 2026-03-12
 // [2026-03-08] バックグラウンドでサーバーを維持するための Foreground Service
 // [2026-03-08] Tunnel 管理（cloudflared）を統合
+// [2026-03-11] StatsDatabase / StatsCollector の初期化・ライフサイクル管理を追加
+// [2026-03-11] WebViewPool による並列処理対応、設定値の反映
+// [2026-03-11] onTrimMemory でメモリ逼迫時に WebViewPool を縮小
+// [2026-03-12] BindException 対策: 起動時に既存サーバー停止＋リトライ、onTaskRemoved でクリーンアップ
 package jp.salesnow.chromebridge.service
 
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentCallbacks2
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
@@ -15,7 +20,10 @@ import androidx.core.app.NotificationCompat
 import jp.salesnow.chromebridge.MainActivity
 import jp.salesnow.chromebridge.R
 import jp.salesnow.chromebridge.data.SettingsRepository
-import jp.salesnow.chromebridge.fetcher.HeadlessWebViewFetcher
+import jp.salesnow.chromebridge.data.StatsCollector
+import jp.salesnow.chromebridge.data.StatsDatabase
+import jp.salesnow.chromebridge.data.StatsRepository
+import jp.salesnow.chromebridge.fetcher.WebViewPool
 import jp.salesnow.chromebridge.server.AuthMiddleware
 import jp.salesnow.chromebridge.server.BridgeHttpServer
 import jp.salesnow.chromebridge.server.RateLimiter
@@ -34,8 +42,13 @@ class BridgeForegroundService : Service() {
     }
 
     private var server: BridgeHttpServer? = null
-    private var fetcher: HeadlessWebViewFetcher? = null
+    // [2026-03-11] 単一 WebView → WebViewPool に置き換え
+    private var webViewPool: WebViewPool? = null
     private var tunnelManager: TunnelManager? = null
+    // [2026-03-11] 統計データ基盤
+    private var statsDatabase: StatsDatabase? = null
+    private var statsCollector: StatsCollector? = null
+    private var statsRepository: StatsRepository? = null
     private val logs = CopyOnWriteArrayList<String>()
     private val maxLogs = 100
 
@@ -77,22 +90,74 @@ class BridgeForegroundService : Service() {
     }
 
     private fun startServer() {
+        // [2026-03-12] 既存のサーバーが残っていれば先に停止（BindException 防止）
+        if (server != null) {
+            addLog("既存サーバーを停止して再起動します")
+            stopServerInternal()
+        }
+
         val settings = SettingsRepository(this)
         val port = settings.port
 
-        // WebView 初期化
-        fetcher = HeadlessWebViewFetcher(this).also { it.init() }
+        // [2026-03-11] 統計データベースとコレクターの初期化
+        statsDatabase = StatsDatabase(this)
+        statsCollector = StatsCollector(statsDatabase!!)
+        statsRepository = StatsRepository(statsDatabase!!)
+
+        // [2026-03-11] 起動時にデータクリーンアップ（古いデータを削除）
+        try {
+            statsDatabase?.cleanup()
+        } catch (e: Exception) {
+            addLog("統計データクリーンアップ失敗: ${e.message}")
+        }
+
+        // [2026-03-11] WebViewPool 初期化（設定された並列数で）
+        val concurrency = settings.concurrency
+        webViewPool = WebViewPool(this, concurrency).also { it.init() }
+        addLog("WebViewPool 初期化: ${concurrency}並列")
 
         val auth = AuthMiddleware { settings.apiKey }
         val rateLimiter = RateLimiter()
 
-        server = BridgeHttpServer(port, fetcher!!, auth, rateLimiter) { msg ->
+        // [2026-03-11] 設定値をサーバーに渡す
+        val newServer = BridgeHttpServer(
+            port = port,
+            pool = webViewPool!!,
+            auth = auth,
+            rateLimiter = rateLimiter,
+            maxQueueSize = settings.queueSize,
+            maxTimeout = settings.maxTimeout,
+            maxWait = settings.maxWait,
+            statsCollector = statsCollector,
+            statsRepository = statsRepository
+        ) { msg ->
             addLog(msg)
-        }.also {
-            it.start()
         }
 
-        addLog("サーバー起動: http://localhost:$port")
+        // [2026-03-12] BindException をキャッチしてリトライ（ポートが TIME_WAIT の場合に対応）
+        try {
+            newServer.start()
+        } catch (e: java.io.IOException) {
+            addLog("ポート $port がまだ使用中です。1秒後にリトライします...")
+            try {
+                Thread.sleep(1000)
+                newServer.start()
+            } catch (e2: java.io.IOException) {
+                addLog("サーバー起動失敗: ポート $port を確保できません (${e2.message})")
+                webViewPool?.destroy()
+                webViewPool = null
+                statsCollector?.destroy()
+                statsCollector = null
+                statsDatabase?.close()
+                statsDatabase = null
+                statsRepository = null
+                updateNotification("起動失敗 — Port: $port が使用中")
+                return
+            }
+        }
+        server = newServer
+
+        addLog("サーバー起動: http://localhost:$port (並列=${concurrency}, キュー=${settings.queueSize}, timeout上限=${settings.maxTimeout}s, wait上限=${settings.maxWait}s)")
         updateNotification("稼働中 — Port: $port")
     }
 
@@ -132,16 +197,33 @@ class BridgeForegroundService : Service() {
     fun stopServer() {
         tunnelManager?.stop()
         tunnelManager = null
-        server?.stopServer()
-        server = null
-        fetcher?.destroy()
-        fetcher = null
+        stopServerInternal()
         addLog("サーバー停止")
+    }
+
+    // [2026-03-12] サーバー・プール・統計のクリーンアップ（startServer からも呼ばれる）
+    private fun stopServerInternal() {
+        try { server?.stopServer() } catch (_: Exception) {}
+        server = null
+        try { webViewPool?.destroy() } catch (_: Exception) {}
+        webViewPool = null
+        try { statsCollector?.destroy() } catch (_: Exception) {}
+        statsCollector = null
+        try { statsDatabase?.close() } catch (_: Exception) {}
+        statsDatabase = null
+        statsRepository = null
     }
 
     val isRunning: Boolean get() = server != null
 
     fun getPort(): Int = SettingsRepository(this).port
+
+    // [2026-03-11] 統計データへのアクセス（UI/API から利用）
+    fun getStatsRepository(): StatsRepository? = statsRepository
+
+    // [2026-03-11] WebViewPool 状態へのアクセス（UI から利用）
+    fun getPoolSize(): Int = webViewPool?.currentSize ?: 0
+    fun getPoolAvailable(): Int = webViewPool?.availableCount ?: 0
 
     fun getLogs(): List<String> = logs.toList()
 
@@ -194,6 +276,28 @@ class BridgeForegroundService : Service() {
     private fun updateNotification(content: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(content))
+    }
+
+    // [2026-03-11] メモリ逼迫時に WebViewPool を縮小してメモリを確保
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            val before = webViewPool?.currentSize ?: 0
+            webViewPool?.onLowMemory()
+            val after = webViewPool?.currentSize ?: 0
+            if (before != after) {
+                addLog("メモリ逼迫: WebViewPool 縮小 ${before} → ${after}")
+            }
+        }
+    }
+
+    // [2026-03-12] アプリがタスク一覧からスワイプ終了された時のクリーンアップ
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        addLog("タスク削除検知: サーバーを停止します")
+        stopServer()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

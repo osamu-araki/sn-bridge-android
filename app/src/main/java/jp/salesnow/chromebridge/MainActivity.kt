@@ -1,6 +1,7 @@
-// Version: 1.1.0 | Updated: 2026-03-08
+// Version: 2.0.0 | Updated: 2026-03-11
 // [2026-03-08] Chrome Bridge Android メインアクティビティ
 // [2026-03-08] Tunnel 操作（開始/停止/設定保存）を追加
+// [2026-03-11] 3タブ構成対応、統計データ・設定の受け渡し
 package jp.salesnow.chromebridge
 
 import android.Manifest
@@ -18,10 +19,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
+import jp.salesnow.chromebridge.data.DailyStatsData
+import jp.salesnow.chromebridge.data.MonthlyStatsData
 import jp.salesnow.chromebridge.data.SettingsRepository
 import jp.salesnow.chromebridge.service.BridgeForegroundService
 import jp.salesnow.chromebridge.ui.MainScreen
 import jp.salesnow.chromebridge.ui.ServerState
+import jp.salesnow.chromebridge.ui.SettingsState
 import jp.salesnow.chromebridge.ui.theme.ChromeBridgeTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -60,6 +64,11 @@ class MainActivity : ComponentActivity() {
                 val isBound by bound
                 var serverState by remember { mutableStateOf(ServerState()) }
                 var logs by remember { mutableStateOf<List<String>>(emptyList()) }
+                // [2026-03-11] 統計データ
+                var todayStats by remember { mutableStateOf<DailyStatsData?>(null) }
+                var currentMonthStats by remember { mutableStateOf<MonthlyStatsData?>(null) }
+                var dailyStats by remember { mutableStateOf<List<DailyStatsData>>(emptyList()) }
+                var monthlyStats by remember { mutableStateOf<List<MonthlyStatsData>>(emptyList()) }
 
                 // 1秒ごとに状態更新
                 LaunchedEffect(isBound) {
@@ -70,7 +79,10 @@ class MainActivity : ComponentActivity() {
                                 port = svc.getPort(),
                                 pendingRequests = 0,
                                 uptimeSeconds = 0,
-                                tunnelRunning = svc.isTunnelRunning
+                                tunnelRunning = svc.isTunnelRunning,
+                                poolSize = svc.getPoolSize(),
+                                poolAvailable = svc.getPoolAvailable(),
+                                maxQueueSize = settings.queueSize
                             )
                             logs = svc.getLogs()
                         }
@@ -78,11 +90,38 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // [2026-03-11] 5秒ごとに統計データ更新（重い処理なので頻度を下げる）
+                LaunchedEffect(isBound) {
+                    while (isActive && isBound) {
+                        serviceBinder?.getStatsRepository()?.let { repo ->
+                            try {
+                                todayStats = repo.getTodayStats()
+                                currentMonthStats = repo.getCurrentMonthStats()
+                                dailyStats = repo.getDailyStats(30)
+                                monthlyStats = repo.getMonthlyStats(12)
+                            } catch (_: Exception) {
+                                // DB アクセスエラーは無視
+                            }
+                        }
+                        delay(5000)
+                    }
+                }
+
                 MainScreen(
                     serverState = serverState,
                     logs = logs,
-                    savedPort = settings.port,
-                    savedApiKey = settings.apiKey,
+                    settings = SettingsState(
+                        port = settings.port,
+                        apiKey = settings.apiKey,
+                        concurrency = settings.concurrency,
+                        queueSize = settings.queueSize,
+                        maxTimeout = settings.maxTimeout,
+                        maxWait = settings.maxWait
+                    ),
+                    todayStats = todayStats,
+                    currentMonthStats = currentMonthStats,
+                    dailyStats = dailyStats,
+                    monthlyStats = monthlyStats,
                     savedTunnelToken = settings.tunnelToken,
                     savedTunnelDomain = settings.tunnelDomain,
                     onStartServer = { requestStartService() },
@@ -90,12 +129,15 @@ class MainActivity : ComponentActivity() {
                         serviceBinder?.stopServer()
                         stopService(Intent(this@MainActivity, BridgeForegroundService::class.java))
                     },
-                    onSaveSettings = { port, apiKey ->
-                        settings.port = port
-                        settings.apiKey = apiKey
-                        Toast.makeText(this@MainActivity, "設定を保存しました", Toast.LENGTH_SHORT).show()
+                    onSaveSettings = { newSettings ->
+                        settings.port = newSettings.port
+                        settings.apiKey = newSettings.apiKey
+                        settings.concurrency = newSettings.concurrency
+                        settings.queueSize = newSettings.queueSize
+                        settings.maxTimeout = newSettings.maxTimeout
+                        settings.maxWait = newSettings.maxWait
+                        Toast.makeText(this@MainActivity, "設定を保存しました（再起動で反映）", Toast.LENGTH_SHORT).show()
                     },
-                    // [2026-03-08] Tunnel 操作
                     onSaveTunnelSettings = { token, domain ->
                         settings.tunnelToken = token
                         settings.tunnelDomain = domain
@@ -130,7 +172,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStartService() {
-        // Android 13+ では通知の権限が必要
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS

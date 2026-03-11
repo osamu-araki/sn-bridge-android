@@ -1,5 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-03-08
+// Version: 1.0.1 | Updated: 2026-03-11
 // [2026-03-08] Chrome 拡張の handleFetchRequest を Android WebView で再実装
+// [2026-03-11] @Deprecated: WebViewPool に置き換え済み。FetchRequest/FetchResult の定義元として残す。
 package jp.salesnow.chromebridge.fetcher
 
 import android.annotation.SuppressLint
@@ -34,7 +35,10 @@ data class FetchResult(
 /**
  * 非表示の WebView を1つ保持し、ページ取得リクエストを処理する
  * Chrome 拡張のワーカータブ固定化と同じ発想
+ *
+ * @deprecated WebViewPool に置き換え済み。新しいコードでは WebViewPool を使用すること。
  */
+@Deprecated("WebViewPool に置き換え済み", replaceWith = ReplaceWith("WebViewPool"))
 class HeadlessWebViewFetcher(private val context: Context) {
     private var webView: WebView? = null
     private val mainHandler = Handler(Looper.getMainLooper())

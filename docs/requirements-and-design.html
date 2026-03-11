@@ -1,0 +1,2070 @@
+<!-- Version: 1.3.0 | Updated: 2026-03-11 -->
+<!-- [2026-03-11] 並列数上限8、キュー上限100、タイムアウト制御、端末別注意事項、モック画面を追加 -->
+<!-- [2026-03-11] サーバータブ（稼働中/停止中）のモック画面を追加 -->
+<!-- [2026-03-11] 全Phase実装完了。ステータス・ファイル構成・進捗を反映 -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChromeBridge v2.0 - 要件定義 & 概要設計</title>
+<style>
+  :root {
+    --primary: #2A9BA1;
+    --primary-dark: #27878A;
+    --primary-light: #94CDD0;
+    --secondary: #283C50;
+    --secondary-dark: #182F46;
+    --secondary-light: #939DA7;
+    --bg: #f7f9fb;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+    background: var(--bg);
+    color: var(--secondary);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .header {
+    background: linear-gradient(135deg, var(--secondary-dark) 0%, var(--secondary) 100%);
+    color: #fff;
+    padding: 48px 0 40px;
+    text-align: center;
+  }
+  .header h1 { font-size: 28px; font-weight: 700; letter-spacing: 0.5px; }
+  .header .subtitle {
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--primary-light);
+    font-weight: 400;
+  }
+  .header .meta {
+    margin-top: 16px;
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    font-size: 13px;
+    color: var(--secondary-light);
+  }
+  .header .meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+  .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  /* ナビゲーション */
+  .toc {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin: -24px auto 32px;
+    position: relative;
+    z-index: 1;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .toc h2 { font-size: 16px; color: var(--secondary); margin-bottom: 12px; }
+  .toc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 32px; }
+  .toc a {
+    color: var(--primary-dark);
+    text-decoration: none;
+    font-size: 14px;
+    padding: 4px 0;
+    display: block;
+    border-bottom: 1px solid transparent;
+    transition: all 0.15s;
+  }
+  .toc a:hover { color: var(--primary); border-bottom-color: var(--primary-light); }
+  .toc .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--secondary-light);
+    margin-top: 8px;
+    margin-bottom: 2px;
+    font-weight: 600;
+  }
+
+  /* セクション */
+  .section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin-bottom: 24px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+  }
+  .section h2 {
+    font-size: 20px;
+    color: var(--secondary);
+    border-left: 4px solid var(--primary);
+    padding-left: 14px;
+    margin-bottom: 20px;
+  }
+  .section h3 {
+    font-size: 16px;
+    color: var(--secondary);
+    margin: 24px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section h4 {
+    font-size: 14px;
+    color: var(--primary-dark);
+    margin: 16px 0 8px;
+    font-weight: 600;
+  }
+  p, li { font-size: 14px; }
+  p { margin-bottom: 10px; }
+  ul, ol { margin-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+
+  /* バッジ */
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 12px;
+    vertical-align: middle;
+  }
+  .badge-new { background: #dcfce7; color: #166534; }
+  .badge-change { background: #fef3c7; color: #92400e; }
+  .badge-must { background: #fee2e2; color: #991b1b; }
+  .badge-want { background: #e0f2fe; color: #075985; }
+  .badge-done { background: #dcfce7; color: #166534; border: 1px solid #22c55e; }
+
+  /* テーブル */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 16px;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    text-align: left;
+  }
+  th {
+    background: var(--secondary-dark);
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:nth-child(even) { background: #f8fafc; }
+
+  /* コードブロック */
+  pre {
+    background: #1e293b;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  code {
+    background: #f1f5f9;
+    color: var(--primary-dark);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .kw { color: #c084fc; }
+  .str { color: #86efac; }
+  .cmt { color: #64748b; }
+  .type { color: #7dd3fc; }
+  .num { color: #fbbf24; }
+
+  /* 図 */
+  .diagram {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 16px 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .diagram pre {
+    background: none;
+    color: var(--secondary);
+    text-align: left;
+    display: inline-block;
+    padding: 0;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* 比較表 */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .compare-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .compare-card.before { border-top: 3px solid var(--secondary-light); }
+  .compare-card.after { border-top: 3px solid var(--primary); }
+  .compare-card h4 { margin: 0 0 10px; font-size: 14px; }
+
+  /* アラート */
+  .alert {
+    padding: 14px 18px;
+    border-radius: 8px;
+    margin: 12px 0;
+    font-size: 13px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .alert-info { background: #eff6ff; border-left: 3px solid #3b82f6; }
+  .alert-warn { background: #fffbeb; border-left: 3px solid var(--warning); }
+  .alert-danger { background: #fef2f2; border-left: 3px solid var(--danger); }
+
+  /* ===== モック画面スタイル ===== */
+  .mock-device {
+    background: #111827;
+    border-radius: 28px;
+    padding: 12px;
+    max-width: 380px;
+    margin: 20px auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  }
+  .mock-screen {
+    background: var(--bg);
+    border-radius: 20px;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .mock-statusbar {
+    background: var(--secondary-dark);
+    color: #fff;
+    font-size: 10px;
+    padding: 6px 16px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .mock-appbar {
+    background: var(--secondary-dark);
+    color: #fff;
+    padding: 12px 16px 8px;
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .mock-tabs {
+    display: flex;
+    background: var(--secondary-dark);
+    padding: 0 8px;
+  }
+  .mock-tab {
+    flex: 1;
+    text-align: center;
+    padding: 10px 0 8px;
+    color: var(--secondary-light);
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+    cursor: default;
+  }
+  .mock-tab.active {
+    color: var(--primary-light);
+    border-bottom-color: var(--primary);
+  }
+  .mock-body { padding: 12px; }
+  .mock-card {
+    background: var(--card);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+  }
+  .mock-card-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--secondary-light);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .mock-summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+  .mock-summary-item {
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 10px 8px;
+    text-align: center;
+  }
+  .mock-summary-label {
+    font-size: 10px;
+    color: var(--secondary-light);
+    margin-bottom: 2px;
+  }
+  .mock-summary-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--secondary);
+  }
+  .mock-summary-value.teal { color: var(--primary); }
+  .mock-summary-value.green { color: var(--success); }
+  .mock-summary-sub {
+    font-size: 9px;
+    color: var(--secondary-light);
+    margin-top: 1px;
+  }
+  .mock-period-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 10px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .mock-period-btn {
+    flex: 1;
+    text-align: center;
+    padding: 6px 0;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--card);
+    color: var(--secondary-light);
+    cursor: default;
+  }
+  .mock-period-btn.active {
+    background: var(--primary);
+    color: #fff;
+  }
+  .mock-table {
+    width: 100%;
+    font-size: 11px;
+    border-collapse: collapse;
+  }
+  .mock-table th {
+    background: #f1f5f9;
+    color: var(--secondary-light);
+    font-size: 10px;
+    padding: 6px 4px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+  }
+  .mock-table td {
+    padding: 7px 4px;
+    text-align: center;
+    border: none;
+    border-bottom: 1px solid #f1f5f9;
+    color: var(--secondary);
+    font-size: 11px;
+  }
+  .mock-table tr:nth-child(even) { background: transparent; }
+  .mock-table .date-col { text-align: left; font-weight: 600; }
+  .mock-success { color: var(--success); font-weight: 600; }
+  .mock-warn { color: var(--warning); font-weight: 600; }
+
+  /* 設定モック */
+  .mock-setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 12px;
+  }
+  .mock-setting-row:last-child { border-bottom: none; }
+  .mock-setting-label { color: var(--secondary); font-weight: 500; }
+  .mock-setting-value {
+    background: #f1f5f9;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--secondary);
+    min-width: 64px;
+    text-align: center;
+    font-weight: 600;
+  }
+  .mock-setting-range {
+    font-size: 10px;
+    color: var(--secondary-light);
+    margin-left: 6px;
+  }
+  .mock-setting-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .mock-divider {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary-dark);
+    padding: 8px 0 4px;
+    border-bottom: 1px solid var(--primary-light);
+    margin-bottom: 4px;
+  }
+  .mock-notice {
+    background: #fffbeb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 10px;
+    color: #92400e;
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+  .mock-notice strong { color: #78350f; }
+  .mock-slider {
+    width: 100%;
+    height: 4px;
+    background: #e2e8f0;
+    border-radius: 2px;
+    position: relative;
+    margin: 8px 0 4px;
+  }
+  .mock-slider-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 2px;
+  }
+  .mock-slider-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--secondary-light);
+  }
+
+  /* 月別モック */
+  .mock-month-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 80px;
+    padding: 0 4px;
+    margin-bottom: 4px;
+  }
+  .mock-bar {
+    flex: 1;
+    background: var(--primary-light);
+    border-radius: 3px 3px 0 0;
+    min-height: 4px;
+    position: relative;
+  }
+  .mock-bar.current { background: var(--primary); }
+  .mock-bar-labels {
+    display: flex;
+    gap: 4px;
+    padding: 0 4px;
+  }
+  .mock-bar-label {
+    flex: 1;
+    text-align: center;
+    font-size: 9px;
+    color: var(--secondary-light);
+  }
+
+  /* レスポンシブ */
+  @media (max-width: 700px) {
+    .toc-grid { grid-template-columns: 1fr; }
+    .compare { grid-template-columns: 1fr; }
+    .section { padding: 20px; }
+    .header { padding: 32px 16px; }
+    .mock-grid { grid-template-columns: 1fr !important; }
+  }
+
+  .mock-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin: 16px 0;
+  }
+
+  /* 印刷 */
+  @media print {
+    body { font-size: 12px; }
+    .header { padding: 24px 0; }
+    .section { break-inside: avoid; box-shadow: none; }
+    .mock-device { box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ヘッダー -->
+<div class="header">
+  <div class="container">
+    <h1>ChromeBridge v2.0</h1>
+    <div class="subtitle">統計ダッシュボード & 並列処理エンジン - 要件定義 / 概要設計</div>
+    <div class="meta">
+      <span>作成日: 2026-03-11</span>
+      <span>ステータス: 実装完了</span>
+      <span>対象: chrome-bridge-android</span>
+    </div>
+  </div>
+</div>
+
+<div class="container" style="padding-top: 48px; padding-bottom: 64px;">
+
+<!-- 目次 -->
+<div class="toc">
+  <h2>目次</h2>
+  <div class="toc-grid">
+    <div>
+      <div class="section-label">Part 1: 要件定義</div>
+      <a href="#background">1. 背景と現状の課題</a>
+      <a href="#scope">2. スコープ</a>
+      <a href="#func-stats">3. 機能要件 - 統計機能</a>
+      <a href="#func-parallel">4. 機能要件 - 並列処理</a>
+      <a href="#func-timeout">5. 機能要件 - タイムアウト制御</a>
+      <a href="#nonfunc">6. 非機能要件</a>
+    </div>
+    <div>
+      <div class="section-label">Part 2: 概要設計</div>
+      <a href="#architecture">7. アーキテクチャ</a>
+      <a href="#data-design">8. データ設計</a>
+      <a href="#api-design">9. API設計</a>
+      <a href="#ui-design">10. UI設計 & モック画面</a>
+      <a href="#impl-plan">11. 実装計画</a>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 1: 要件定義                                             -->
+<!-- ============================================================ -->
+
+<!-- 1. 背景 -->
+<div class="section" id="background">
+  <h2>1. 背景と現状の課題</h2>
+
+  <h3>1.1 現在のアーキテクチャ</h3>
+  <p>ChromeBridge は Android 端末上で NanoHTTPd + WebView によるヘッドレスブラウジングを提供し、Cloudflare Tunnel 経由で外部からアクセス可能にするアプリケーションです。</p>
+
+  <table>
+    <tr><th>項目</th><th>現在の実装</th><th>課題</th></tr>
+    <tr>
+      <td>処理モデル</td>
+      <td><code>LinkedBlockingQueue</code> + 1ワーカースレッド</td>
+      <td>直列処理のため、1リクエスト最大43秒間後続が待機</td>
+    </tr>
+    <tr>
+      <td>統計情報</td>
+      <td><code>GET /status</code> で pending_requests, uptime のみ</td>
+      <td>累計処理件数・通信量・エラー率が把握不可</td>
+    </tr>
+    <tr>
+      <td>ログ</td>
+      <td>インメモリ <code>CopyOnWriteArrayList</code>（最大100件）</td>
+      <td>再起動で消失。日別・月別の集計不可</td>
+    </tr>
+    <tr>
+      <td>並列数</td>
+      <td>固定: 1（<code>MAX_QUEUE_SIZE = 10</code>）</td>
+      <td>設定変更不可。スループット向上の余地なし</td>
+    </tr>
+    <tr>
+      <td>タイムアウト</td>
+      <td>クライアント指定値をそのまま使用（上限なし）</td>
+      <td>悪意あるリクエストで長時間スレッド占有が可能</td>
+    </tr>
+  </table>
+
+  <h3>1.2 現在のタイムアウト構造</h3>
+  <table>
+    <tr><th>箇所</th><th>現在の値</th><th>コード</th><th>問題</th></tr>
+    <tr>
+      <td>WebView 読み込み待ち</td>
+      <td><code>timeout</code> パラメータ（デフォルト 30秒）</td>
+      <td>HeadlessWebViewFetcher:104</td>
+      <td>クライアントが任意の値を指定可能（上限なし）</td>
+    </tr>
+    <tr>
+      <td>ページ読み込み後の待機</td>
+      <td><code>wait</code> パラメータ（デフォルト 3秒）</td>
+      <td>HeadlessWebViewFetcher:83</td>
+      <td>同上。上限バリデーションなし</td>
+    </tr>
+    <tr>
+      <td>サーバー側の結果待ち</td>
+      <td><code>timeout + 10秒</code>（デフォルト 40秒）</td>
+      <td>BridgeHttpServer:182</td>
+      <td>timeout に連動して無制限に伸びる</td>
+    </tr>
+    <tr>
+      <td>1リクエスト最大所要時間</td>
+      <td colspan="3"><strong>wait + timeout + 10秒 = 43秒（デフォルト）、上限なし</strong></td>
+    </tr>
+  </table>
+
+  <h3>1.3 解決すべき問題</h3>
+  <ol>
+    <li><strong>運用可視性の欠如</strong> - 処理件数・通信量・エラー率を日別/月別で確認できない</li>
+    <li><strong>スループットの制限</strong> - 直列処理が性能ボトルネック。複数WebViewで並列化したい</li>
+    <li><strong>設定の柔軟性不足</strong> - 並列数・キューサイズ・タイムアウトを動的に変更できない</li>
+    <li><strong>タイムアウトの安全性</strong> - クライアントが極端な値を送信してリソースを占有できる</li>
+  </ol>
+</div>
+
+<!-- 2. スコープ -->
+<div class="section" id="scope">
+  <h2>2. スコープ</h2>
+
+  <table>
+    <tr><th>機能</th><th>優先度</th><th>概要</th></tr>
+    <tr>
+      <td>統計ダッシュボード <span class="badge badge-new">NEW</span></td>
+      <td><span class="badge badge-must">MUST</span></td>
+      <td>処理件数・通信量を日別/月別で表示。アプリ内UI + APIエンドポイント</td>
+    </tr>
+    <tr>
+      <td>並列処理エンジン <span class="badge badge-new">NEW</span></td>
+      <td><span class="badge badge-must">MUST</span></td>
+      <td>複数WebViewインスタンスによる同時フェッチ。並列数を1~8で設定変更可能</td>
+    </tr>
+    <tr>
+      <td>統計データ永続化 <span class="badge badge-new">NEW</span></td>
+      <td><span class="badge badge-must">MUST</span></td>
+      <td>SQLiteで統計を永続保存。再起動後も集計可能</td>
+    </tr>
+    <tr>
+      <td>タイムアウト制御 <span class="badge badge-new">NEW</span></td>
+      <td><span class="badge badge-must">MUST</span></td>
+      <td>サーバー側でtimeout/waitの上限を設け、クライアント指定値をクランプ</td>
+    </tr>
+    <tr>
+      <td>設定画面拡張 <span class="badge badge-change">CHANGE</span></td>
+      <td><span class="badge badge-must">MUST</span></td>
+      <td>並列数・キューサイズ・タイムアウト上限の設定UIを追加</td>
+    </tr>
+    <tr>
+      <td>統計API <span class="badge badge-new">NEW</span></td>
+      <td><span class="badge badge-want">WANT</span></td>
+      <td>外部から統計を取得する REST API</td>
+    </tr>
+  </table>
+
+  <div class="alert alert-info">
+    <strong>対象外:</strong> Prometheus/Grafana 連携、リモート管理画面、WebView 以外の取得エンジン（OkHttp等）は将来検討事項とし、今回のスコープには含めない。
+  </div>
+</div>
+
+<!-- 3. 機能要件 - 統計 -->
+<div class="section" id="func-stats">
+  <h2>3. 機能要件 - 統計機能</h2>
+
+  <h3>3.1 収集するメトリクス</h3>
+  <table>
+    <tr><th>メトリクス</th><th>型</th><th>説明</th><th>集計単位</th></tr>
+    <tr><td>リクエスト数</td><td>Long</td><td>受信した /fetch リクエストの総数</td><td>日別 / 月別</td></tr>
+    <tr><td>成功数</td><td>Long</td><td>HTTP 200 で返却できた件数</td><td>日別 / 月別</td></tr>
+    <tr><td>エラー数</td><td>Long</td><td>タイムアウト・フェッチ失敗・認証エラー等</td><td>日別 / 月別</td></tr>
+    <tr><td>レスポンスサイズ合計</td><td>Long (bytes)</td><td>返却した JSON レスポンスの合計バイト数</td><td>日別 / 月別</td></tr>
+    <tr><td>平均処理時間</td><td>Long (ms)</td><td>リクエスト受信から返却までの平均</td><td>日別 / 月別</td></tr>
+    <tr><td>最大処理時間</td><td>Long (ms)</td><td>同上の最大値</td><td>日別 / 月別</td></tr>
+    <tr><td>同時実行数（ピーク）</td><td>Int</td><td>その日の最大並列実行数</td><td>日別</td></tr>
+  </table>
+
+  <h3>3.2 表示要件</h3>
+  <h4>日別表示</h4>
+  <ul>
+    <li>直近30日分のデータをリスト形式で表示</li>
+    <li>日付、リクエスト数、成功率(%)、通信量(KB/MB自動切替)、平均処理時間</li>
+    <li>当日のデータはリアルタイム更新（5秒間隔）</li>
+  </ul>
+
+  <h4>月別表示</h4>
+  <ul>
+    <li>直近12ヶ月分のデータをリスト形式 + 棒グラフで表示</li>
+    <li>月、リクエスト数、成功率(%)、通信量(MB/GB自動切替)、平均処理時間</li>
+  </ul>
+
+  <h4>サマリーカード（ダッシュボード上部）</h4>
+  <ul>
+    <li>今日の処理件数 / 成功率</li>
+    <li>今日の通信量</li>
+    <li>今月の処理件数 / 通信量</li>
+    <li>現在の並列実行数 / 設定上限</li>
+  </ul>
+
+  <h3>3.3 エラー分類</h3>
+  <table>
+    <tr><th>エラーコード</th><th>分類</th><th>説明</th></tr>
+    <tr><td>TIMEOUT</td><td>処理系</td><td>WebView の読み込みがタイムアウト</td></tr>
+    <tr><td>FETCH_FAILED</td><td>処理系</td><td>WebView がページ取得に失敗（ネットワーク等）</td></tr>
+    <tr><td>QUEUE_FULL</td><td>容量系</td><td>キューが満杯で503を返却</td></tr>
+    <tr><td>AUTH_FAILED</td><td>認証系</td><td>Bearer Token不一致 or 未設定</td></tr>
+    <tr><td>RATE_LIMITED</td><td>制限系</td><td>レートリミット超過</td></tr>
+    <tr><td>PARSE_ERROR</td><td>処理系</td><td>JS実行結果のパースに失敗</td></tr>
+  </table>
+</div>
+
+<!-- 4. 機能要件 - 並列処理 -->
+<div class="section" id="func-parallel">
+  <h2>4. 機能要件 - 並列処理</h2>
+
+  <h3>4.1 並列処理モデル</h3>
+
+  <div class="compare">
+    <div class="compare-card before">
+      <h4>現在 (v1.x)</h4>
+      <ul>
+        <li>WebView: 1インスタンス</li>
+        <li>ワーカースレッド: 1</li>
+        <li>キューサイズ: 10（固定）</li>
+        <li>最大スループット: ~1.5 req/min</li>
+      </ul>
+    </div>
+    <div class="compare-card after">
+      <h4>提案 (v2.0)</h4>
+      <ul>
+        <li>WebView: N インスタンス（プール）</li>
+        <li>ワーカースレッド: N（設定可能）</li>
+        <li>キューサイズ: M（設定可能）</li>
+        <li>最大スループット: ~N &times; 1.5 req/min</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>4.2 設定項目</h3>
+  <table>
+    <tr><th>設定名</th><th>型</th><th>デフォルト</th><th>範囲</th><th>説明</th></tr>
+    <tr><td>並列数 (concurrency)</td><td>Int</td><td>2</td><td>1 ~ 8</td><td>同時に処理可能なリクエスト数（= WebView プールサイズ）</td></tr>
+    <tr><td>キューサイズ (queueSize)</td><td>Int</td><td>20</td><td>5 ~ 100</td><td>待機キューの最大長。メモリ上の参照のみでリソース消費は軽微</td></tr>
+    <tr><td>最大タイムアウト (maxTimeout)</td><td>Int (秒)</td><td>60</td><td>10 ~ 120</td><td>クライアントの timeout パラメータの上限</td></tr>
+    <tr><td>最大wait (maxWait)</td><td>Int (秒)</td><td>10</td><td>1 ~ 30</td><td>クライアントの wait パラメータの上限</td></tr>
+  </table>
+
+  <div class="alert alert-warn">
+    <strong>WebView のメインスレッド制約:</strong> Android の WebView は UI スレッド（メインスレッド）でのみ操作可能。複数 WebView インスタンスを生成しても、<code>loadUrl()</code> や <code>evaluateJavascript()</code> の呼び出しはすべてメインスレッドにディスパッチされる。これは Android フレームワークの制約であり回避不可。<br><br>
+    ただし、各 WebView は独立してページ読み込みを実行するため、メインスレッドへのポストは瞬時に完了し、実際のネットワーク通信・レンダリングは WebView 内部のバックグラウンドスレッドで並行して行われる。よって <strong>複数 WebView の同時ロードによる実質的な並列処理は可能</strong>。
+  </div>
+
+  <h3>4.3 並列数と端末スペックの目安</h3>
+
+  <div class="alert alert-danger">
+    <strong>重要: 並列数の選択は端末スペックに大きく依存します。</strong> 下表を参考に、運用端末に適した値を設定してください。不適切な並列数はOOMクラッシュやANRの原因になります。
+  </div>
+
+  <table>
+    <tr><th>並列数</th><th>推定メモリ増加</th><th>推奨端末スペック</th><th>注意事項</th></tr>
+    <tr>
+      <td><strong>1</strong></td>
+      <td>+50~100 MB</td>
+      <td>全端末で安全</td>
+      <td>v1.x 互換モード。確実に動作する</td>
+    </tr>
+    <tr>
+      <td><strong>2</strong> (デフォルト)</td>
+      <td>+100~200 MB</td>
+      <td>RAM 4GB 以上</td>
+      <td>大半の端末で安定動作。推奨設定</td>
+    </tr>
+    <tr>
+      <td><strong>3~4</strong></td>
+      <td>+200~400 MB</td>
+      <td>RAM 6GB 以上</td>
+      <td>ミドルレンジ以上。他アプリとの競合に注意</td>
+    </tr>
+    <tr>
+      <td><strong>5~6</strong></td>
+      <td>+400~600 MB</td>
+      <td>RAM 8GB 以上</td>
+      <td>ハイエンド端末向け。専用機としての運用を推奨</td>
+    </tr>
+    <tr>
+      <td><strong>7~8</strong></td>
+      <td>+600~800 MB</td>
+      <td>RAM 10GB 以上（ハイエンド）</td>
+      <td>Galaxy S / Pixel Pro クラスの最新端末が必要。<br>端末を ChromeBridge 専用機として運用すること。<br>バックグラウンドアプリは最小限に抑える</td>
+    </tr>
+  </table>
+
+  <h3>4.4 並列処理の振る舞い</h3>
+  <ol>
+    <li>アプリ起動時に設定値分の WebView インスタンスをプールに生成</li>
+    <li>リクエスト到着時、プールから空き WebView を取得（<code>Semaphore</code> で制御）</li>
+    <li>空きがなければキューで待機。キューも満杯なら 503 を返却</li>
+    <li>フェッチ完了後、WebView をプールに返却</li>
+    <li>並列数の変更はサーバー再起動時に反映（ホットリロード不要）</li>
+  </ol>
+
+  <h3>4.5 安全性の考慮</h3>
+  <ul>
+    <li>並列数の上限を <strong>8</strong> に制限（ハードリミット。コード上で固定）</li>
+    <li>端末メモリ 4GB 未満で並列数 3以上を設定した場合、<strong>UIに警告を表示</strong></li>
+    <li><code>onLowMemory()</code> コールバックで WebView プールサイズを自動縮小（最低1まで）</li>
+    <li>WebView プール内のインスタンスが応答しない場合、タイムアウト後に破棄・再生成</li>
+    <li>キューサイズ最大100でもメモリ影響は軽微（関数参照のみ保持、WebView リソースは消費しない）</li>
+  </ul>
+</div>
+
+<!-- 5. 機能要件 - タイムアウト制御 -->
+<div class="section" id="func-timeout">
+  <h2>5. 機能要件 - タイムアウト制御</h2>
+
+  <h3>5.1 サーバー側クランプ</h3>
+  <p>クライアントから送信された <code>timeout</code> と <code>wait</code> の値を、サーバー設定の上限値で制限（クランプ）する。</p>
+
+  <pre><code><span class="cmt">// クライアント指定値をサーバー上限でクランプ</span>
+<span class="kw">val</span> effectiveTimeout = min(request.timeout, settings.maxTimeout)  <span class="cmt">// max 60s</span>
+<span class="kw">val</span> effectiveWait    = min(request.wait, settings.maxWait)        <span class="cmt">// max 10s</span>
+
+<span class="cmt">// 1リクエストの最大所要時間</span>
+<span class="cmt">// = effectiveWait + effectiveTimeout + バッファ(10s)</span>
+<span class="cmt">// = 10 + 60 + 10 = 最大80秒（デフォルト設定時）</span></code></pre>
+
+  <h3>5.2 タイムアウト構造（変更後）</h3>
+  <table>
+    <tr><th>箇所</th><th>v1.x（現在）</th><th>v2.0（変更後）</th></tr>
+    <tr>
+      <td>WebView 読み込み待ち</td>
+      <td>timeout（上限なし）</td>
+      <td><code>min(timeout, maxTimeout)</code> デフォルト上限 60秒</td>
+    </tr>
+    <tr>
+      <td>ページ読み込み後の待機</td>
+      <td>wait（上限なし）</td>
+      <td><code>min(wait, maxWait)</code> デフォルト上限 10秒</td>
+    </tr>
+    <tr>
+      <td>サーバー側の結果待ち</td>
+      <td>timeout + 10秒</td>
+      <td><code>effectiveTimeout + effectiveWait + 10秒</code></td>
+    </tr>
+    <tr>
+      <td>1リクエスト最大所要時間</td>
+      <td><strong>無制限</strong></td>
+      <td><strong>最大 80秒</strong>（デフォルト設定時）</td>
+    </tr>
+  </table>
+
+  <h3>5.3 クランプ適用時のレスポンス</h3>
+  <p>クライアント指定値がクランプされた場合、レスポンスに <code>clamped</code> フィールドを追加して通知する。</p>
+  <pre><code>{
+  <span class="str">"ok"</span>: <span class="kw">true</span>,
+  <span class="str">"clamped"</span>: {
+    <span class="str">"timeout"</span>: { <span class="str">"requested"</span>: <span class="num">300</span>, <span class="str">"applied"</span>: <span class="num">60</span> },
+    <span class="str">"wait"</span>: { <span class="str">"requested"</span>: <span class="num">30</span>, <span class="str">"applied"</span>: <span class="num">10</span> }
+  },
+  <span class="str">"text"</span>: <span class="str">"..."</span>
+}</code></pre>
+</div>
+
+<!-- 6. 非機能要件 -->
+<div class="section" id="nonfunc">
+  <h2>6. 非機能要件</h2>
+  <table>
+    <tr><th>項目</th><th>要件</th><th>備考</th></tr>
+    <tr>
+      <td>統計データ保持期間</td>
+      <td>日別: 90日、月別: 24ヶ月</td>
+      <td>古いデータは自動削除</td>
+    </tr>
+    <tr>
+      <td>SQLite DB サイズ</td>
+      <td>上限 10MB</td>
+      <td>90日 &times; ~200B/row = 約18KB。十分余裕あり</td>
+    </tr>
+    <tr>
+      <td>統計収集のオーバーヘッド</td>
+      <td>リクエスト処理時間 +5ms 以内</td>
+      <td>メモリバッファ &rarr; 非同期 DB 書き込み</td>
+    </tr>
+    <tr>
+      <td>メモリ使用量（並列時）</td>
+      <td>WebView 1台あたり +50~100MB</td>
+      <td>並列数8で最大 +800MB。ハイエンド端末が必要</td>
+    </tr>
+    <tr>
+      <td>後方互換性</td>
+      <td>既存の /fetch, /status API は変更なし</td>
+      <td>新規エンドポイント・フィールド追加のみ</td>
+    </tr>
+    <tr>
+      <td>データマイグレーション</td>
+      <td>既存の SharedPreferences 設定はそのまま維持</td>
+      <td>新規設定項目のみ追加</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 2: 概要設計                                             -->
+<!-- ============================================================ -->
+
+<!-- 7. アーキテクチャ -->
+<div class="section" id="architecture">
+  <h2>7. アーキテクチャ</h2>
+
+  <h3>7.1 全体構成（変更後）</h3>
+  <div class="diagram">
+    <pre>
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ChromeBridge v2.0                                                      │
+│                                                                         │
+│  ┌──────────────┐    ┌────────────────────────────────────────────────┐│
+│  │  Compose UI  │    │  BridgeHttpServer (NanoHTTPd)                  ││
+│  │              │    │                                                ││
+│  │  Dashboard ──┼───►│  POST /fetch ─── AuthMiddleware                ││
+│  │  - サマリー  │    │                  RateLimiter                   ││
+│  │  - 日別表示  │    │       │                                        ││
+│  │  - 月別表示  │    │       ▼                                        ││
+│  │  - 設定     │    │  <span style="color:#22c55e">TimeoutClamp(timeout, wait)</span>                   ││
+│  │              │    │       │                                        ││
+│  │  Settings ──┼──┐ │       ▼                                        ││
+│  │  - 並列数   │  │ │  ┌──────────┐    ┌───────────────────────────┐ ││
+│  │  - キュー   │  │ │  │ Request  │    │  <span style="color:#22c55e">WebViewPool (NEW)</span>          │ ││
+│  │  - timeout  │  │ │  │ Queue    │───►│                           │ ││
+│  │  - wait     │  │ │  │ (5~100)  │    │  WebView[0] ... [N-1]    │ ││
+│  └──────────────┘  │ │  └──────────┘    │  N = 1~8 (設定可能)      │ ││
+│         │          │ │       │          └─────────┬─────────────────┘ ││
+│         ▼          │ │  ┌────┴─────┐              │                   ││
+│  ┌──────────────┐  │ │  │Semaphore │              │                   ││
+│  │ <span style="color:#22c55e">StatsDB</span>      │  │ │  │(N permits)│              │                   ││
+│  │ <span style="color:#22c55e">(SQLite NEW)</span> │  │ │  └──────────┘              │                   ││
+│  │              │◄─┼─┼──────── <span style="color:#22c55e">StatsCollector</span> ◄──────┘                   ││
+│  │  daily_stats │  │ │                                                ││
+│  │  monthly_agg │  │ │  GET /status ──► ServerState + Stats          ││
+│  │  request_log │  │ │  GET /stats  ──► <span style="color:#22c55e">日別/月別JSON (NEW)</span>          ││
+│  └──────────────┘  │ └────────────────────────────────────────────────┘│
+│                    │                                                    │
+│  ┌──────────────┐  │ ┌──────────────┐                                  │
+│  │ Settings     │◄─┘ │ Cloudflare   │                                  │
+│  │ Repository   │    │ Tunnel       │                                  │
+│  │ + concurrency│    │ (既存)       │                                  │
+│  │ + queueSize  │    └──────────────┘                                  │
+│  │ + maxTimeout │                                                      │
+│  │ + maxWait    │                                                      │
+│  └──────────────┘                                                       │
+└─────────────────────────────────────────────────────────────────────────┘</pre>
+  </div>
+
+  <h3>7.2 新規・変更コンポーネント一覧</h3>
+  <table>
+    <tr><th>コンポーネント</th><th>区分</th><th>役割</th></tr>
+    <tr>
+      <td><code>WebViewPool</code></td>
+      <td><span class="badge badge-new">NEW</span></td>
+      <td>複数 WebView インスタンスの生成・管理・貸出・回収。onLowMemory での自動縮小</td>
+    </tr>
+    <tr>
+      <td><code>StatsCollector</code></td>
+      <td><span class="badge badge-new">NEW</span></td>
+      <td>リクエストごとのメトリクス収集。メモリバッファ &rarr; SQLite書き込み</td>
+    </tr>
+    <tr>
+      <td><code>StatsDatabase</code></td>
+      <td><span class="badge badge-new">NEW</span></td>
+      <td>SQLite DB。日別集計テーブル + 月別集約テーブル</td>
+    </tr>
+    <tr>
+      <td><code>StatsRepository</code></td>
+      <td><span class="badge badge-new">NEW</span></td>
+      <td>UIやAPIからの統計データ読み取りインターフェース</td>
+    </tr>
+    <tr>
+      <td><code>DashboardScreen</code></td>
+      <td><span class="badge badge-new">NEW</span></td>
+      <td>統計ダッシュボードの Compose UI</td>
+    </tr>
+    <tr>
+      <td><code>BridgeHttpServer</code></td>
+      <td><span class="badge badge-change">CHANGE</span></td>
+      <td>キュー &rarr; WebViewPool連携、タイムアウトクランプ、StatsCollector呼び出し追加</td>
+    </tr>
+    <tr>
+      <td><code>HeadlessWebViewFetcher</code></td>
+      <td><span class="badge badge-change">CHANGE</span></td>
+      <td>単一WebView &rarr; WebViewPool対応に改修</td>
+    </tr>
+    <tr>
+      <td><code>SettingsRepository</code></td>
+      <td><span class="badge badge-change">CHANGE</span></td>
+      <td>concurrency, queueSize, maxTimeout, maxWait の設定項目追加</td>
+    </tr>
+    <tr>
+      <td><code>MainScreen</code></td>
+      <td><span class="badge badge-change">CHANGE</span></td>
+      <td>ダッシュボードタブ追加、設定項目追加</td>
+    </tr>
+    <tr>
+      <td><code>BridgeForegroundService</code></td>
+      <td><span class="badge badge-change">CHANGE</span></td>
+      <td>WebViewPool初期化、StatsCollector組み込み、onLowMemory処理</td>
+    </tr>
+  </table>
+
+  <h3>7.3 並列処理フロー</h3>
+  <div class="diagram">
+    <pre>
+Client ─── POST /fetch ───► BridgeHttpServer
+                                │
+                         Auth + RateLimit チェック
+                                │
+                                ▼
+                    <span style="color:#22c55e">TimeoutClamp: timeout=min(req, maxTimeout)</span>
+                    <span style="color:#22c55e">              wait=min(req, maxWait)</span>
+                                │
+                                ▼
+                    ┌─── RequestQueue ◄──── (queueSize: 5~100)
+                    │     (BlockingQueue)
+                    │          │
+                    │    ┌─────┴─────┐
+                    │    │ Semaphore  │ ◄── (concurrency: 1~8)
+                    │    │ acquire()  │
+                    │    └─────┬─────┘
+                    │          │
+           並列実行 │    ┌─────┴────────────────────────────────────┐
+                    │    │         WebViewPool                      │
+                    │    │                                          │
+                    │    │  [WV-0] ── fetch(url, timeout) ─► result │
+                    │    │  [WV-1] ── fetch(url, timeout) ─► result │
+                    │    │   ...                                    │ ← 最大8個同時
+                    │    │  [WV-7] ── fetch(url, timeout) ─► result │
+                    │    │                                          │
+                    │    └─────┬────────────────────────────────────┘
+                    │          │
+                    │    Semaphore.release()
+                    │          │
+                    │          ▼
+                    │    StatsCollector.record(result)
+                    │          │
+                    │          ▼
+                    └──► Response (+ clamped info) ───► Client</pre>
+  </div>
+</div>
+
+<!-- 8. データ設計 -->
+<div class="section" id="data-design">
+  <h2>8. データ設計</h2>
+
+  <h3>8.1 SQLite スキーマ</h3>
+
+  <h4>request_log テーブル（個別リクエスト記録）</h4>
+  <pre><code><span class="kw">CREATE TABLE</span> request_log (
+    id             <span class="type">INTEGER</span> <span class="kw">PRIMARY KEY AUTOINCREMENT</span>,
+    timestamp      <span class="type">INTEGER</span> <span class="kw">NOT NULL</span>,     <span class="cmt">-- Unix epoch millis</span>
+    date_key       <span class="type">TEXT</span>    <span class="kw">NOT NULL</span>,     <span class="cmt">-- "2026-03-11"</span>
+    month_key      <span class="type">TEXT</span>    <span class="kw">NOT NULL</span>,     <span class="cmt">-- "2026-03"</span>
+    url            <span class="type">TEXT</span>    <span class="kw">NOT NULL</span>,
+    success        <span class="type">INTEGER</span> <span class="kw">NOT NULL</span>,     <span class="cmt">-- 1=成功, 0=失敗</span>
+    error_code     <span class="type">TEXT</span>,                    <span class="cmt">-- TIMEOUT, FETCH_FAILED, etc.</span>
+    duration_ms    <span class="type">INTEGER</span> <span class="kw">NOT NULL</span>,     <span class="cmt">-- 処理時間(ms)</span>
+    response_bytes <span class="type">INTEGER</span> <span class="kw">NOT NULL</span>,     <span class="cmt">-- レスポンスサイズ(bytes)</span>
+    worker_id      <span class="type">INTEGER</span> <span class="kw">NOT NULL</span>      <span class="cmt">-- 使用した WebView のインデックス</span>
+);
+<span class="kw">CREATE INDEX</span> idx_date <span class="kw">ON</span> request_log(date_key);
+<span class="kw">CREATE INDEX</span> idx_month <span class="kw">ON</span> request_log(month_key);</code></pre>
+
+  <h4>daily_stats テーブル（日別集約 - 高速読み取り用）</h4>
+  <pre><code><span class="kw">CREATE TABLE</span> daily_stats (
+    date_key         <span class="type">TEXT</span>    <span class="kw">PRIMARY KEY</span>,  <span class="cmt">-- "2026-03-11"</span>
+    total_requests   <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    success_count    <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_count      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    total_bytes      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    avg_duration_ms  <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    max_duration_ms  <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    peak_concurrency <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_timeout    <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_fetch      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_queue      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_auth       <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_rate       <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_parse      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>
+);</code></pre>
+
+  <h4>monthly_stats テーブル（月別集約）</h4>
+  <pre><code><span class="kw">CREATE TABLE</span> monthly_stats (
+    month_key        <span class="type">TEXT</span>    <span class="kw">PRIMARY KEY</span>,  <span class="cmt">-- "2026-03"</span>
+    total_requests   <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    success_count    <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    error_count      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    total_bytes      <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    avg_duration_ms  <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>,
+    max_duration_ms  <span class="type">INTEGER</span> <span class="kw">NOT NULL DEFAULT</span> <span class="num">0</span>
+);</code></pre>
+
+  <h3>8.2 データフロー</h3>
+  <div class="diagram">
+    <pre>
+リクエスト完了
+     │
+     ▼
+StatsCollector.record(RequestMetrics)
+     │
+     ├──► メモリバッファ (ConcurrentLinkedQueue)
+     │         │
+     │     5秒ごと or バッファ50件超過
+     │         │
+     │         ▼
+     │    バッチ INSERT → request_log
+     │         │
+     │         ▼
+     │    UPSERT → daily_stats (インクリメンタル更新)
+     │         │
+     │         ▼
+     └──► UPSERT → monthly_stats (インクリメンタル更新)
+
+※ 日次バッチ: 前日の daily_stats を request_log から再計算（整合性保証）
+※ 月次バッチ: 前月の monthly_stats を daily_stats から再集約
+※ データ保持: 90日超の request_log は自動削除、daily_stats は90日保持</pre>
+  </div>
+
+  <h3>8.3 SettingsRepository 追加項目</h3>
+  <table>
+    <tr><th>キー</th><th>型</th><th>デフォルト</th><th>範囲</th><th>説明</th></tr>
+    <tr><td><code>concurrency</code></td><td>Int</td><td>2</td><td>1~8</td><td>並列 WebView 数</td></tr>
+    <tr><td><code>queueSize</code></td><td>Int</td><td>20</td><td>5~100</td><td>リクエストキューの最大長</td></tr>
+    <tr><td><code>maxTimeout</code></td><td>Int</td><td>60</td><td>10~120</td><td>timeout パラメータの上限(秒)</td></tr>
+    <tr><td><code>maxWait</code></td><td>Int</td><td>10</td><td>1~30</td><td>wait パラメータの上限(秒)</td></tr>
+  </table>
+</div>
+
+<!-- 9. API 設計 -->
+<div class="section" id="api-design">
+  <h2>9. API 設計</h2>
+
+  <h3>9.1 既存 API（変更なし）</h3>
+  <table>
+    <tr><th>メソッド</th><th>パス</th><th>変更</th></tr>
+    <tr><td>POST</td><td>/fetch</td><td>内部処理のみ変更（並列化 + タイムアウトクランプ）。<br>レスポンスに <code>clamped</code> フィールドが追加される場合あり</td></tr>
+    <tr><td>GET</td><td>/status</td><td>フィールド追加（後方互換）</td></tr>
+  </table>
+
+  <h3>9.2 /status レスポンス拡張</h3>
+  <pre><code>{
+  <span class="str">"webview_ready"</span>: <span class="kw">true</span>,
+  <span class="str">"pending_requests"</span>: <span class="num">3</span>,
+  <span class="str">"uptime_seconds"</span>: <span class="num">7200</span>,
+  <span class="cmt">// ↓ 新規追加フィールド</span>
+  <span class="str">"concurrency"</span>: <span class="num">4</span>,
+  <span class="str">"active_workers"</span>: <span class="num">2</span>,
+  <span class="str">"pool_size"</span>: <span class="num">4</span>,
+  <span class="str">"queue_size"</span>: <span class="num">20</span>,
+  <span class="str">"max_timeout"</span>: <span class="num">60</span>,
+  <span class="str">"max_wait"</span>: <span class="num">10</span>,
+  <span class="str">"today_requests"</span>: <span class="num">142</span>,
+  <span class="str">"today_success_rate"</span>: <span class="num">0.97</span>,
+  <span class="str">"today_bytes"</span>: <span class="num">5242880</span>
+}</code></pre>
+
+  <h3>9.3 新規 API: GET /stats</h3>
+
+  <h4>リクエスト</h4>
+  <pre><code>GET /stats?period=daily&limit=30
+GET /stats?period=monthly&limit=12
+
+Authorization: Bearer &lt;API_KEY&gt;</code></pre>
+
+  <h4>レスポンス (daily)</h4>
+  <pre><code>{
+  <span class="str">"period"</span>: <span class="str">"daily"</span>,
+  <span class="str">"data"</span>: [
+    {
+      <span class="str">"date"</span>: <span class="str">"2026-03-11"</span>,
+      <span class="str">"total_requests"</span>: <span class="num">142</span>,
+      <span class="str">"success_count"</span>: <span class="num">138</span>,
+      <span class="str">"error_count"</span>: <span class="num">4</span>,
+      <span class="str">"success_rate"</span>: <span class="num">0.972</span>,
+      <span class="str">"total_bytes"</span>: <span class="num">5242880</span>,
+      <span class="str">"total_bytes_display"</span>: <span class="str">"5.0 MB"</span>,
+      <span class="str">"avg_duration_ms"</span>: <span class="num">3200</span>,
+      <span class="str">"max_duration_ms"</span>: <span class="num">12500</span>,
+      <span class="str">"peak_concurrency"</span>: <span class="num">3</span>,
+      <span class="str">"errors"</span>: {
+        <span class="str">"TIMEOUT"</span>: <span class="num">2</span>,
+        <span class="str">"FETCH_FAILED"</span>: <span class="num">1</span>,
+        <span class="str">"RATE_LIMITED"</span>: <span class="num">1</span>
+      }
+    }
+  ]
+}</code></pre>
+
+  <h4>レスポンス (monthly)</h4>
+  <pre><code>{
+  <span class="str">"period"</span>: <span class="str">"monthly"</span>,
+  <span class="str">"data"</span>: [
+    {
+      <span class="str">"month"</span>: <span class="str">"2026-03"</span>,
+      <span class="str">"total_requests"</span>: <span class="num">3420</span>,
+      <span class="str">"success_count"</span>: <span class="num">3318</span>,
+      <span class="str">"error_count"</span>: <span class="num">102</span>,
+      <span class="str">"success_rate"</span>: <span class="num">0.970</span>,
+      <span class="str">"total_bytes"</span>: <span class="num">134217728</span>,
+      <span class="str">"total_bytes_display"</span>: <span class="str">"128.0 MB"</span>,
+      <span class="str">"avg_duration_ms"</span>: <span class="num">2800</span>,
+      <span class="str">"max_duration_ms"</span>: <span class="num">35000</span>
+    }
+  ]
+}</code></pre>
+</div>
+
+<!-- 10. UI 設計 & モック画面 -->
+<div class="section" id="ui-design">
+  <h2>10. UI 設計 & モック画面</h2>
+
+  <h3>10.1 画面構成</h3>
+  <p>既存の MainScreen にタブナビゲーションを追加し、「サーバー」「統計」「設定」を切り替え可能にする。</p>
+
+  <table>
+    <tr><th>コンポーネント</th><th>配置</th><th>役割</th></tr>
+    <tr><td><code>TabNavigation</code></td><td>MainScreen上部</td><td>「サーバー」「統計」「設定」タブ切替</td></tr>
+    <tr><td><code>DashboardScreen</code></td><td>統計タブ</td><td>統計画面全体のコンテナ</td></tr>
+    <tr><td><code>SummaryCards</code></td><td>Dashboard上部</td><td>今日/今月のサマリーカード群</td></tr>
+    <tr><td><code>PeriodSelector</code></td><td>Dashboard中部</td><td>日別/月別切替</td></tr>
+    <tr><td><code>StatsTable</code></td><td>Dashboard下部</td><td>期間別統計のリスト表示</td></tr>
+    <tr><td><code>SettingsScreen</code></td><td>設定タブ</td><td>並列数・キュー・タイムアウトの設定UI</td></tr>
+  </table>
+
+  <h3>10.2 モック画面</h3>
+
+  <div class="mock-grid">
+
+    <!-- ===== サーバータブ（稼働中） ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">サーバータブ（稼働中）</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab active">サーバー</div>
+            <div class="mock-tab">統計</div>
+            <div class="mock-tab">設定</div>
+          </div>
+          <div class="mock-body">
+            <!-- サーバー状態カード -->
+            <div class="mock-card">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px;height:10px;border-radius:50%;background:var(--success)"></div>
+                <div style="flex:1">
+                  <div style="font-weight:700;font-size:14px;color:var(--secondary)">サーバー</div>
+                  <div style="font-size:11px;color:var(--secondary-light)">Port: 8080</div>
+                </div>
+                <div style="border:1px solid var(--secondary-light);border-radius:6px;padding:4px 14px;font-size:11px;color:var(--secondary-light);font-weight:600">停止</div>
+              </div>
+            </div>
+
+            <!-- リアルタイム状態 -->
+            <div class="mock-card">
+              <div class="mock-card-title">リアルタイム状態</div>
+              <div class="mock-summary-grid">
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">稼働時間</div>
+                  <div class="mock-summary-value" style="font-size:15px">2:14:30</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">処理中</div>
+                  <div class="mock-summary-value teal" style="font-size:15px">2<span style="font-size:11px;color:var(--secondary-light)"> / 4</span></div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">キュー</div>
+                  <div class="mock-summary-value" style="font-size:15px">3<span style="font-size:11px;color:var(--secondary-light)"> / 20</span></div>
+                </div>
+              </div>
+              <div style="margin-top:8px">
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--secondary-light);margin-bottom:3px">
+                  <span>WebView プール使用率</span>
+                  <span>2 / 4</span>
+                </div>
+                <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden">
+                  <div style="width:50%;height:100%;background:var(--primary);border-radius:3px"></div>
+                </div>
+              </div>
+              <div style="margin-top:6px">
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--secondary-light);margin-bottom:3px">
+                  <span>キュー使用率</span>
+                  <span>3 / 20</span>
+                </div>
+                <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden">
+                  <div style="width:15%;height:100%;background:var(--primary-light);border-radius:3px"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tunnel 状態 -->
+            <div class="mock-card">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px;height:10px;border-radius:50%;background:var(--success)"></div>
+                <div style="flex:1">
+                  <div style="font-weight:700;font-size:14px;color:var(--secondary)">Tunnel</div>
+                  <div style="font-size:11px;color:var(--secondary-light)">bridge.salesnow.jp</div>
+                </div>
+                <div style="border:1px solid var(--secondary-light);border-radius:6px;padding:4px 14px;font-size:11px;color:var(--secondary-light);font-weight:600">切断</div>
+              </div>
+            </div>
+
+            <!-- 今日のミニサマリー -->
+            <div class="mock-card">
+              <div class="mock-card-title">今日の実績</div>
+              <div style="display:flex;gap:12px;font-size:12px">
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">処理件数</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--primary)">142</div>
+                </div>
+                <div style="width:1px;background:var(--border)"></div>
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">成功率</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--success)">97.2%</div>
+                </div>
+                <div style="width:1px;background:var(--border)"></div>
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">通信量</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--secondary)">5.0 <span style="font-size:10px">MB</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ログ -->
+            <div class="mock-card">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <div style="font-size:12px;font-weight:700;color:var(--primary)">&#9660; LOGS</div>
+                <div style="font-size:10px;color:var(--secondary-light)">Clear</div>
+              </div>
+              <div style="background:#1e293b;border-radius:6px;padding:8px;font-family:monospace;font-size:9px;line-height:1.7;color:#94a3b8">
+                <div><span style="color:#64748b">[14:32:05]</span> <span style="color:#86efac">成功</span> [text]: https://example.com — 2,340文字 (3,210ms)</div>
+                <div><span style="color:#64748b">[14:31:58]</span> <span style="color:#86efac">成功</span> [dom]: https://corp.jp — 8,102文字 (4,520ms)</div>
+                <div><span style="color:#64748b">[14:31:42]</span> リクエスト受信: https://news.example.jp</div>
+                <div><span style="color:#64748b">[14:31:30]</span> <span style="color:#fbbf24">TIMEOUT</span>: https://slow-site.com — 60,000ms</div>
+                <div><span style="color:#64748b">[14:31:12]</span> <span style="color:#86efac">成功</span> [text]: https://blog.dev — 5,670文字 (2,890ms)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== サーバータブ（停止中） ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">サーバータブ（停止中）</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab active">サーバー</div>
+            <div class="mock-tab">統計</div>
+            <div class="mock-tab">設定</div>
+          </div>
+          <div class="mock-body">
+            <!-- サーバー停止状態 -->
+            <div class="mock-card">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px;height:10px;border-radius:50%;background:var(--secondary-light)"></div>
+                <div style="flex:1">
+                  <div style="font-weight:700;font-size:14px;color:var(--secondary)">サーバー</div>
+                  <div style="font-size:11px;color:var(--secondary-light)">停止中</div>
+                </div>
+                <div style="border:1px solid var(--primary);border-radius:6px;padding:4px 14px;font-size:11px;color:var(--primary);font-weight:600">起動</div>
+              </div>
+            </div>
+
+            <!-- 停止中のリアルタイム状態 -->
+            <div class="mock-card" style="opacity:0.5">
+              <div class="mock-card-title">リアルタイム状態</div>
+              <div class="mock-summary-grid">
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">稼働時間</div>
+                  <div class="mock-summary-value" style="font-size:15px;color:var(--secondary-light)">--:--:--</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">処理中</div>
+                  <div class="mock-summary-value" style="font-size:15px;color:var(--secondary-light)">-<span style="font-size:11px"> / 4</span></div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">キュー</div>
+                  <div class="mock-summary-value" style="font-size:15px;color:var(--secondary-light)">-<span style="font-size:11px"> / 20</span></div>
+                </div>
+              </div>
+              <div style="margin-top:8px">
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--secondary-light);margin-bottom:3px">
+                  <span>WebView プール使用率</span>
+                  <span>- / 4</span>
+                </div>
+                <div style="height:6px;background:#e2e8f0;border-radius:3px"></div>
+              </div>
+              <div style="margin-top:6px">
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--secondary-light);margin-bottom:3px">
+                  <span>キュー使用率</span>
+                  <span>- / 20</span>
+                </div>
+                <div style="height:6px;background:#e2e8f0;border-radius:3px"></div>
+              </div>
+            </div>
+
+            <!-- Tunnel 停止中 -->
+            <div class="mock-card" style="opacity:0.5">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:10px;height:10px;border-radius:50%;background:var(--secondary-light)"></div>
+                <div style="flex:1">
+                  <div style="font-weight:700;font-size:14px;color:var(--secondary)">Tunnel</div>
+                  <div style="font-size:11px;color:var(--secondary-light)">停止中</div>
+                </div>
+                <div style="border:1px solid var(--border);border-radius:6px;padding:4px 14px;font-size:11px;color:var(--secondary-light);font-weight:600">接続</div>
+              </div>
+            </div>
+
+            <!-- 前回の実績 -->
+            <div class="mock-card">
+              <div class="mock-card-title">前回の実績（03/10）</div>
+              <div style="display:flex;gap:12px;font-size:12px">
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">処理件数</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--secondary-light)">198</div>
+                </div>
+                <div style="width:1px;background:var(--border)"></div>
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">成功率</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--secondary-light)">98.5%</div>
+                </div>
+                <div style="width:1px;background:var(--border)"></div>
+                <div style="flex:1;text-align:center">
+                  <div style="font-size:10px;color:var(--secondary-light)">通信量</div>
+                  <div style="font-size:16px;font-weight:700;color:var(--secondary-light)">7.1 <span style="font-size:10px">MB</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ログ（折りたたみ） -->
+            <div class="mock-card">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div style="font-size:12px;font-weight:700;color:var(--primary)">&#9654; LOGS</div>
+              </div>
+            </div>
+
+            <!-- フッター -->
+            <div style="text-align:center;font-size:10px;color:var(--secondary-light);padding:8px 0">
+              Chrome Bridge Android v2.0.0
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 統計ダッシュボード（日別） ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">統計ダッシュボード（日別表示）</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab">サーバー</div>
+            <div class="mock-tab active">統計</div>
+            <div class="mock-tab">設定</div>
+          </div>
+          <div class="mock-body">
+            <!-- サマリーカード -->
+            <div class="mock-card">
+              <div class="mock-card-title">Today</div>
+              <div class="mock-summary-grid">
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">処理件数</div>
+                  <div class="mock-summary-value teal">142</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">成功率</div>
+                  <div class="mock-summary-value green">97.2%</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">通信量</div>
+                  <div class="mock-summary-value">5.0</div>
+                  <div class="mock-summary-sub">MB</div>
+                </div>
+              </div>
+            </div>
+            <div class="mock-card">
+              <div class="mock-card-title">This Month</div>
+              <div class="mock-summary-grid">
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">処理件数</div>
+                  <div class="mock-summary-value teal">3,420</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">通信量</div>
+                  <div class="mock-summary-value">128</div>
+                  <div class="mock-summary-sub">MB</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">並列状況</div>
+                  <div class="mock-summary-value teal">2<span style="font-size:12px;color:var(--secondary-light)"> / 4</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 日別テーブル -->
+            <div class="mock-card">
+              <div class="mock-period-toggle">
+                <div class="mock-period-btn active">日別</div>
+                <div class="mock-period-btn">月別</div>
+              </div>
+              <table class="mock-table">
+                <tr>
+                  <th style="text-align:left">日付</th>
+                  <th>件数</th>
+                  <th>成功率</th>
+                  <th>通信量</th>
+                  <th>平均</th>
+                </tr>
+                <tr>
+                  <td class="date-col">03/11</td>
+                  <td>142</td>
+                  <td class="mock-success">97.2%</td>
+                  <td>5.0 MB</td>
+                  <td>3.2s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">03/10</td>
+                  <td>198</td>
+                  <td class="mock-success">98.5%</td>
+                  <td>7.1 MB</td>
+                  <td>2.8s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">03/09</td>
+                  <td>156</td>
+                  <td class="mock-success">96.8%</td>
+                  <td>5.8 MB</td>
+                  <td>3.1s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">03/08</td>
+                  <td>87</td>
+                  <td class="mock-warn">95.4%</td>
+                  <td>3.2 MB</td>
+                  <td>3.5s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">03/07</td>
+                  <td>211</td>
+                  <td class="mock-success">99.1%</td>
+                  <td>8.4 MB</td>
+                  <td>2.6s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">03/06</td>
+                  <td>175</td>
+                  <td class="mock-success">97.7%</td>
+                  <td>6.3 MB</td>
+                  <td>2.9s</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 統計ダッシュボード（月別） ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">統計ダッシュボード（月別表示）</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab">サーバー</div>
+            <div class="mock-tab active">統計</div>
+            <div class="mock-tab">設定</div>
+          </div>
+          <div class="mock-body">
+            <!-- サマリーカード（同じ） -->
+            <div class="mock-card">
+              <div class="mock-card-title">Today</div>
+              <div class="mock-summary-grid">
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">処理件数</div>
+                  <div class="mock-summary-value teal">142</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">成功率</div>
+                  <div class="mock-summary-value green">97.2%</div>
+                </div>
+                <div class="mock-summary-item">
+                  <div class="mock-summary-label">通信量</div>
+                  <div class="mock-summary-value">5.0</div>
+                  <div class="mock-summary-sub">MB</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 月別チャート + テーブル -->
+            <div class="mock-card">
+              <div class="mock-period-toggle">
+                <div class="mock-period-btn">日別</div>
+                <div class="mock-period-btn active">月別</div>
+              </div>
+
+              <div class="mock-card-title" style="margin-top:8px">リクエスト数推移</div>
+              <div class="mock-month-bar">
+                <div class="mock-bar" style="height:15%"></div>
+                <div class="mock-bar" style="height:28%"></div>
+                <div class="mock-bar" style="height:35%"></div>
+                <div class="mock-bar" style="height:52%"></div>
+                <div class="mock-bar" style="height:61%"></div>
+                <div class="mock-bar" style="height:75%"></div>
+                <div class="mock-bar" style="height:68%"></div>
+                <div class="mock-bar" style="height:82%"></div>
+                <div class="mock-bar" style="height:91%"></div>
+                <div class="mock-bar" style="height:88%"></div>
+                <div class="mock-bar" style="height:95%"></div>
+                <div class="mock-bar current" style="height:45%"></div>
+              </div>
+              <div class="mock-bar-labels">
+                <div class="mock-bar-label">4</div>
+                <div class="mock-bar-label">5</div>
+                <div class="mock-bar-label">6</div>
+                <div class="mock-bar-label">7</div>
+                <div class="mock-bar-label">8</div>
+                <div class="mock-bar-label">9</div>
+                <div class="mock-bar-label">10</div>
+                <div class="mock-bar-label">11</div>
+                <div class="mock-bar-label">12</div>
+                <div class="mock-bar-label">1</div>
+                <div class="mock-bar-label">2</div>
+                <div class="mock-bar-label">3</div>
+              </div>
+
+              <table class="mock-table" style="margin-top:12px">
+                <tr>
+                  <th style="text-align:left">月</th>
+                  <th>件数</th>
+                  <th>成功率</th>
+                  <th>通信量</th>
+                  <th>平均</th>
+                </tr>
+                <tr>
+                  <td class="date-col">2026-03</td>
+                  <td>3,420</td>
+                  <td class="mock-success">97.0%</td>
+                  <td>128 MB</td>
+                  <td>2.8s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">2026-02</td>
+                  <td>5,812</td>
+                  <td class="mock-success">98.2%</td>
+                  <td>215 MB</td>
+                  <td>2.5s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">2026-01</td>
+                  <td>5,403</td>
+                  <td class="mock-success">97.8%</td>
+                  <td>198 MB</td>
+                  <td>2.7s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">2025-12</td>
+                  <td>5,580</td>
+                  <td class="mock-success">97.5%</td>
+                  <td>204 MB</td>
+                  <td>2.6s</td>
+                </tr>
+                <tr>
+                  <td class="date-col">2025-11</td>
+                  <td>5,024</td>
+                  <td class="mock-success">98.1%</td>
+                  <td>186 MB</td>
+                  <td>2.9s</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 設定画面 ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">設定画面</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab">サーバー</div>
+            <div class="mock-tab">統計</div>
+            <div class="mock-tab active">設定</div>
+          </div>
+          <div class="mock-body">
+            <div class="mock-card">
+              <div class="mock-divider">サーバー基本設定</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">ポート番号</span>
+                <span class="mock-setting-value">8080</span>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">API Key</span>
+                <span class="mock-setting-value" style="letter-spacing:2px">********</span>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">自動起動</span>
+                <span class="mock-setting-value" style="background:var(--primary);color:#fff;min-width:48px">ON</span>
+              </div>
+            </div>
+
+            <div class="mock-card">
+              <div class="mock-divider">並列処理設定</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">並列数</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">4</span>
+                  <span class="mock-setting-range">1~8</span>
+                </div>
+              </div>
+              <div class="mock-slider">
+                <div class="mock-slider-fill" style="width:42.8%"></div>
+              </div>
+              <div class="mock-slider-labels">
+                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+              </div>
+
+              <div class="mock-setting-row" style="margin-top:8px">
+                <span class="mock-setting-label">キューサイズ</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">20</span>
+                  <span class="mock-setting-range">5~100</span>
+                </div>
+              </div>
+              <div class="mock-slider">
+                <div class="mock-slider-fill" style="width:15.8%"></div>
+              </div>
+              <div class="mock-slider-labels">
+                <span>5</span><span></span><span>25</span><span></span><span>50</span><span></span><span>75</span><span>100</span>
+              </div>
+
+              <div class="mock-notice">
+                <strong>*</strong> 並列数の変更はサーバー再起動後に反映されます
+              </div>
+            </div>
+
+            <div class="mock-card">
+              <div class="mock-divider">タイムアウト制御</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">最大 timeout</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">60秒</span>
+                  <span class="mock-setting-range">10~120</span>
+                </div>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">最大 wait</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">10秒</span>
+                  <span class="mock-setting-range">1~30</span>
+                </div>
+              </div>
+              <div class="mock-notice">
+                <strong>*</strong> クライアント指定値がこの上限を超える場合、自動的にクランプされます
+              </div>
+            </div>
+
+            <div class="mock-card">
+              <div class="mock-divider">Tunnel 設定</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">Tunnel Token</span>
+                <span class="mock-setting-value" style="letter-spacing:2px">********</span>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">ステータス</span>
+                <span class="mock-setting-value" style="background:var(--success);color:#fff">接続中</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 設定画面（メモリ警告） ===== -->
+    <div>
+      <h4 style="text-align:center; margin-bottom:8px; font-size:13px; color:var(--secondary-light);">メモリ警告の表示例</h4>
+      <div class="mock-device">
+        <div class="mock-screen">
+          <div class="mock-statusbar">
+            <span>9:41</span>
+            <span>ChromeBridge</span>
+          </div>
+          <div class="mock-appbar">ChromeBridge</div>
+          <div class="mock-tabs">
+            <div class="mock-tab">サーバー</div>
+            <div class="mock-tab">統計</div>
+            <div class="mock-tab active">設定</div>
+          </div>
+          <div class="mock-body">
+            <div class="mock-card">
+              <div class="mock-divider">並列処理設定</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">並列数</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value" style="border-color:var(--danger);color:var(--danger)">8</span>
+                  <span class="mock-setting-range">1~8</span>
+                </div>
+              </div>
+              <div class="mock-slider">
+                <div class="mock-slider-fill" style="width:100%;background:var(--danger)"></div>
+              </div>
+              <div class="mock-slider-labels">
+                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+              </div>
+
+              <!-- 警告 -->
+              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-top:10px;font-size:11px;color:#991b1b;line-height:1.6">
+                <strong style="font-size:12px">メモリ警告</strong><br>
+                この端末の RAM は <strong>6GB</strong> です。<br>
+                並列数 8 は <strong>RAM 10GB 以上</strong>の端末で推奨されます。<br>
+                OOM クラッシュが発生する可能性があります。<br>
+                <strong>推奨値: 3~4</strong>
+              </div>
+
+              <div class="mock-setting-row" style="margin-top:12px">
+                <span class="mock-setting-label">キューサイズ</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">100</span>
+                  <span class="mock-setting-range">5~100</span>
+                </div>
+              </div>
+              <div class="mock-slider">
+                <div class="mock-slider-fill" style="width:100%"></div>
+              </div>
+              <div class="mock-slider-labels">
+                <span>5</span><span></span><span>25</span><span></span><span>50</span><span></span><span>75</span><span>100</span>
+              </div>
+
+              <div class="mock-notice">
+                <strong>*</strong> キューサイズはメモリへの影響が軽微です（参照のみ保持）
+              </div>
+            </div>
+
+            <div class="mock-card">
+              <div class="mock-divider">タイムアウト制御</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">最大 timeout</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">120秒</span>
+                  <span class="mock-setting-range">10~120</span>
+                </div>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">最大 wait</span>
+                <div class="mock-setting-right">
+                  <span class="mock-setting-value">30秒</span>
+                  <span class="mock-setting-range">1~30</span>
+                </div>
+              </div>
+              <div class="mock-notice">
+                <strong>*</strong> 1リクエスト最大所要時間: wait(30) + timeout(120) + buffer(10) = <strong>160秒</strong>
+              </div>
+            </div>
+
+            <div class="mock-card">
+              <div class="mock-divider">端末情報</div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">端末 RAM</span>
+                <span style="font-size:12px;font-weight:600">6 GB</span>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">利用可能メモリ</span>
+                <span style="font-size:12px;font-weight:600">2.1 GB</span>
+              </div>
+              <div class="mock-setting-row">
+                <span class="mock-setting-label">WebView メモリ推定</span>
+                <span style="font-size:12px;font-weight:600;color:var(--danger)">~800 MB (8台)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 11. 実装計画 -->
+<div class="section" id="impl-plan">
+  <h2>11. 実装計画</h2>
+
+  <h3>11.1 フェーズ分割</h3>
+  <table>
+    <tr><th>フェーズ</th><th>内容</th><th>影響ファイル</th><th>状態</th></tr>
+    <tr>
+      <td><strong>Phase 1</strong><br>データ基盤</td>
+      <td>
+        <ul>
+          <li>SQLite DB (StatsDatabase) 作成</li>
+          <li>StatsCollector 実装</li>
+          <li>StatsRepository 実装</li>
+          <li>BridgeHttpServer にメトリクス記録を組み込み</li>
+        </ul>
+      </td>
+      <td>
+        <code>data/StatsDatabase.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>data/StatsCollector.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>data/StatsRepository.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>server/BridgeHttpServer.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>service/BridgeForegroundService.kt</code> <span class="badge badge-change">CHANGE</span>
+      </td>
+      <td><span class="badge badge-done">完了</span></td>
+    </tr>
+    <tr>
+      <td><strong>Phase 2</strong><br>並列処理<br>+ タイムアウト</td>
+      <td>
+        <ul>
+          <li>WebViewPool 実装</li>
+          <li>HeadlessWebViewFetcher &rarr; Pool対応</li>
+          <li>BridgeHttpServer のキュー/Semaphore改修</li>
+          <li>タイムアウトクランプ実装</li>
+          <li>SettingsRepository に設定項目追加</li>
+        </ul>
+      </td>
+      <td>
+        <code>fetcher/WebViewPool.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>fetcher/HeadlessWebViewFetcher.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>server/BridgeHttpServer.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>data/SettingsRepository.kt</code> <span class="badge badge-change">CHANGE</span>
+      </td>
+      <td><span class="badge badge-done">完了</span></td>
+    </tr>
+    <tr>
+      <td><strong>Phase 3</strong><br>UI & API</td>
+      <td>
+        <ul>
+          <li>ServerTab / StatsTab / SettingsTab 実装</li>
+          <li>MainScreen を3タブ構成に全面改修</li>
+          <li>設定画面に並列数/キュー/タイムアウト追加</li>
+          <li>MainActivity に統計データポーリング追加</li>
+          <li>/stats API エンドポイント追加</li>
+          <li>/status レスポンス拡張</li>
+        </ul>
+      </td>
+      <td>
+        <code>ui/ServerTab.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>ui/StatsTab.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>ui/SettingsTab.kt</code> <span class="badge badge-new">NEW</span><br>
+        <code>ui/MainScreen.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>MainActivity.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>server/BridgeHttpServer.kt</code> <span class="badge badge-change">CHANGE</span>
+      </td>
+      <td><span class="badge badge-done">完了</span></td>
+    </tr>
+    <tr>
+      <td><strong>Phase 4</strong><br>仕上げ</td>
+      <td>
+        <ul>
+          <li>データ保持期間の自動クリーンアップ</li>
+          <li>日次/月次集約バッチ</li>
+          <li>onLowMemory プール縮小</li>
+          <li>エッジケース対応・テスト</li>
+        </ul>
+      </td>
+      <td>
+        <code>data/StatsCollector.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>data/StatsDatabase.kt</code> <span class="badge badge-change">CHANGE</span><br>
+        <code>fetcher/WebViewPool.kt</code> <span class="badge badge-change">CHANGE</span>
+      </td>
+      <td><span class="badge badge-done">完了</span></td>
+    </tr>
+  </table>
+
+  <h3>11.2 ファイル構成（実装後）</h3>
+  <pre><code>app/src/main/java/jp/salesnow/chromebridge/
+├── MainActivity.kt                <span class="cmt">// v2.0.0: 統計データポーリング、設定受け渡し</span>
+├── ui/
+│   ├── MainScreen.kt              <span class="cmt">// v2.0.0: 3タブコンテナ（サーバー/統計/設定）</span>
+│   ├── <span style="color:#22c55e">ServerTab.kt</span>               <span class="cmt">// NEW: サーバー状態・Tunnel・ログ</span>
+│   ├── <span style="color:#22c55e">StatsTab.kt</span>                <span class="cmt">// NEW: 日別/月別統計ダッシュボード</span>
+│   ├── <span style="color:#22c55e">SettingsTab.kt</span>             <span class="cmt">// NEW: 全設定（並列数スライダー含む）</span>
+│   └── theme/
+│       └── Theme.kt
+├── server/
+│   ├── BridgeHttpServer.kt        <span class="cmt">// CHANGE: Pool連携, /stats, クランプ</span>
+│   ├── AuthMiddleware.kt
+│   └── RateLimiter.kt
+├── fetcher/
+│   ├── HeadlessWebViewFetcher.kt  <span class="cmt">// @Deprecated: WebViewPool に置き換え済み</span>
+│   ├── <span style="color:#22c55e">WebViewPool.kt</span>              <span class="cmt">// NEW: WebViewプール + メモリ監視</span>
+│   └── JsExtractors.kt
+├── service/
+│   └── BridgeForegroundService.kt <span class="cmt">// CHANGE: Pool初期化, Stats, onLowMemory</span>
+├── tunnel/
+│   ├── TunnelManager.kt
+│   └── DnsProxy.kt
+└── data/
+    ├── SettingsRepository.kt      <span class="cmt">// CHANGE: 4項目追加</span>
+    ├── <span style="color:#22c55e">StatsDatabase.kt</span>            <span class="cmt">// NEW: SQLiteOpenHelper</span>
+    ├── <span style="color:#22c55e">StatsCollector.kt</span>           <span class="cmt">// NEW: メトリクス収集・バッチ書き込み</span>
+    └── <span style="color:#22c55e">StatsRepository.kt</span>          <span class="cmt">// NEW: 統計データ読み取り</span></code></pre>
+
+  <h3>11.3 リスクと対策</h3>
+  <table>
+    <tr><th>リスク</th><th>影響</th><th>対策</th></tr>
+    <tr>
+      <td>複数 WebView のメモリ消費</td>
+      <td>OOM クラッシュ</td>
+      <td>上限8。設定UI でメモリ警告を表示。<code>onLowMemory()</code> でプール自動縮小（最低1）。起動時にメモリチェック</td>
+    </tr>
+    <tr>
+      <td>WebView メインスレッド競合</td>
+      <td>ANR</td>
+      <td>loadUrl/evaluateJs のメインスレッドポストは瞬時に完了。実際の処理は WebView 内部スレッド</td>
+    </tr>
+    <tr>
+      <td>SQLite の書き込み負荷</td>
+      <td>処理遅延</td>
+      <td>メモリバッファ + 5秒間隔バッチ書き込みで I/O を最小化</td>
+    </tr>
+    <tr>
+      <td>クライアントによるリソース占有</td>
+      <td>DoS</td>
+      <td>timeout/wait をサーバー側でクランプ。レスポンスに clamped 情報を含めて透明性確保</td>
+    </tr>
+    <tr>
+      <td>統計データの整合性</td>
+      <td>表示値のずれ</td>
+      <td>日次バッチで request_log から daily_stats を再計算。月次も同様</td>
+    </tr>
+    <tr>
+      <td>設定変更時の不整合</td>
+      <td>サーバー動作不安定</td>
+      <td>並列数変更はサーバー再起動時のみ反映。タイムアウト変更は即座に反映</td>
+    </tr>
+  </table>
+
+  <div class="alert alert-info">
+    <strong>実装完了（2026-03-11）:</strong> 全4フェーズの実装が完了。Phase 1（データ基盤） → Phase 2（並列処理 + タイムアウト制御） → Phase 3（3タブ UI + /stats API） → Phase 4（クリーンアップ + onTrimMemory + readBody修正 + 認証強化）の順で段階的に実装。ビルド・実機テスト後にリリース可能な状態。
+  </div>
+</div>
+
+</div><!-- /container -->
+
+</body>
+</html>
