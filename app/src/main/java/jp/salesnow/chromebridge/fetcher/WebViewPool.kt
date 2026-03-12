@@ -1,4 +1,4 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-03-12
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
 package jp.salesnow.chromebridge.fetcher
 
@@ -105,11 +105,16 @@ class WebViewPool(
     /**
      * フェッチリクエストを実行する。WebView の取得・返却を内部で管理する。
      */
+    // [2026-03-12] acquire タイムアウトを短縮（5秒）して cloudflared の接続保持時間を削減
+    // WebView が空いていなければ即座に 503 を返し、cloudflared の接続を早期解放する
+    // 呼び出し側（n8n等）がリトライすることを前提とした設計
+    private val acquireTimeoutMs = 5000L
+
     fun fetch(request: FetchRequest): FetchResult {
-        val pair = acquire(request.timeout * 1000L)
+        val pair = acquire(acquireTimeoutMs)
             ?: return FetchResult(
                 ok = false, error = "pool_busy",
-                message = "WebView プールが空きません（${request.timeout}秒待機）"
+                message = "WebView プールが空きません（${acquireTimeoutMs / 1000}秒待機）"
             )
 
         val (wv, workerId) = pair

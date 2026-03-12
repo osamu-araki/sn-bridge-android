@@ -1,4 +1,4 @@
-// Version: 1.9.0 | Updated: 2026-03-12
+// Version: 2.0.0 | Updated: 2026-03-12
 // [2026-03-08] cloudflared バイナリを ProcessBuilder で起動し Cloudflare Tunnel を管理
 // [2026-03-08] nativeLibraryDir の libcloudflared.so を直接実行（SELinux execute 許可済み領域）
 // [2026-03-08] Go DNS リゾルバ対策: /etc/resolv.conf が無い環境用に resolv.conf を生成
@@ -190,7 +190,8 @@ class TunnelManager(
                 binary,
                 "tunnel",
                 "--no-autoupdate",
-                "--protocol", "http2",
+                // [2026-03-12] QUIC: UDP ベースで接続管理が軽量、HTTP/2 より同時接続耐性が高い
+                "--protocol", "quic",
                 "--proxy-connect-timeout", "120s",
                 "--proxy-keepalive-connections", "100",
                 "--proxy-keepalive-timeout", "120s",
