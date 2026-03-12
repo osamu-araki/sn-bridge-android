@@ -116,8 +116,8 @@ fun SettingsTab(
                     Slider(
                         value = concurrencyInput,
                         onValueChange = { concurrencyInput = it },
-                        valueRange = 1f..8f,
-                        steps = 6,
+                        valueRange = 1f..4f,
+                        steps = 2,
                         colors = SliderDefaults.colors(
                             thumbColor = Teal,
                             activeTrackColor = Teal

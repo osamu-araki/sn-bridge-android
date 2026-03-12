@@ -32,10 +32,11 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString("tunnel_token", "") ?: ""
         set(value) = prefs.edit { putString("tunnel_token", value) }
 
-    // [2026-03-11] 並列処理数（WebView プール数）1-8、デフォルト 2
+    // [2026-03-12] 並列処理数（WebView プール数）1-4、デフォルト 2
+    // 8 だとメモリ圧迫で cloudflared が不安定になるため上限を4に制限
     var concurrency: Int
-        get() = prefs.getInt("concurrency", 2).coerceIn(1, 8)
-        set(value) = prefs.edit { putInt("concurrency", value.coerceIn(1, 8)) }
+        get() = prefs.getInt("concurrency", 2).coerceIn(1, 4)
+        set(value) = prefs.edit { putInt("concurrency", value.coerceIn(1, 4)) }
 
     // [2026-03-11] キューサイズ上限 5-100、デフォルト 20
     var queueSize: Int
