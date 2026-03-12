@@ -1,10 +1,11 @@
-// Version: 1.4.0 | Updated: 2026-03-11
+// Version: 1.5.0 | Updated: 2026-03-12
 // [2026-03-08] server/index.js (Express + ws) を NanoHTTPd で再実装
 // API 仕様は完全互換: POST /fetch, GET /status
 // [2026-03-08] Status import 修正、TOO_MANY_REQUESTS を INTERNAL_ERROR に置換
 // [2026-03-11] StatsCollector によるメトリクス記録を追加
 // [2026-03-11] 直列キュー → Semaphore ベース並列処理、タイムアウトクランプ
 // [2026-03-11] GET /stats エンドポイント追加
+// [2026-03-12] レートリミッタ・キュー上限チェック削除（Semaphore + TCP バックログに委譲）
 package jp.salesnow.chromebridge.server
 
 import com.google.gson.Gson
@@ -16,14 +17,15 @@ import jp.salesnow.chromebridge.data.StatsCollector
 import jp.salesnow.chromebridge.data.StatsRepository
 import jp.salesnow.chromebridge.fetcher.FetchRequest
 import jp.salesnow.chromebridge.fetcher.WebViewPool
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class BridgeHttpServer(
     port: Int,
     private val pool: WebViewPool,
     private val auth: AuthMiddleware,
-    private val rateLimiter: RateLimiter,
-    private val maxQueueSize: Int = 20,
     private val maxTimeout: Int = 60,
     private val maxWait: Int = 10,
     private val statsCollector: StatsCollector? = null,
@@ -34,6 +36,13 @@ class BridgeHttpServer(
     private val gson = Gson()
     private val startTime = System.currentTimeMillis()
     private val pendingCount = AtomicInteger(0)
+
+    // [2026-03-12] スレッドプール制限: 無制限スレッド生成を防止
+    // コアプール=pool数、最大=pool数×8（待機リクエスト含む）、60秒アイドルで縮小
+    init {
+        val maxThreads = maxOf(pool.currentSize * 8, 32)
+        setAsyncRunner(BoundRunner(maxThreads, onLog))
+    }
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
@@ -67,17 +76,8 @@ class BridgeHttpServer(
             ))
         }
 
-        // レート制限（NanoHTTPd に 429 がないため INTERNAL_ERROR で代替）
-        if (!rateLimiter.isAllowed(session.remoteIpAddress)) {
-            // [2026-03-11] レートリミットのメトリクスを記録
-            statsCollector?.record(RequestMetrics(
-                url = "", success = false, errorCode = "rate_limit", durationMs = 0, responseBytes = 0
-            ))
-            return jsonResponse(Status.INTERNAL_ERROR, mapOf(
-                "ok" to false, "error" to "rate_limit",
-                "message" to "リクエスト数が上限を超えました（1分あたり20件）"
-            ))
-        }
+        // [2026-03-12] レートリミッタ削除: API Key 認証 + Semaphore バックプレッシャーで制御
+        // NanoHTTPd スレッド/リクエスト → Semaphore ブロック → WebView 空き次第処理
 
         // リクエストボディ解析
         val body = readBody(session)
@@ -104,17 +104,8 @@ class BridgeHttpServer(
             ))
         }
 
-        // [2026-03-11] キュー上限チェック（設定可能な maxQueueSize を使用）
-        val totalPending = pendingCount.get()
-        if (totalPending >= maxQueueSize) {
-            statsCollector?.record(RequestMetrics(
-                url = url, success = false, errorCode = "queue_full", durationMs = 0, responseBytes = 0
-            ))
-            return jsonResponse(Status.INTERNAL_ERROR, mapOf(
-                "ok" to false, "error" to "queue_full",
-                "message" to "キューが上限（${maxQueueSize}件）に達しています"
-            ))
-        }
+        // [2026-03-12] キュー上限チェック削除: TCP バックログ + Semaphore に委譲
+        // pendingCount は監視用に維持（/status エンドポイントで参照）
 
         val requestedWait = json.get("wait")?.asInt ?: 3
         val maxLength = json.get("max_length")?.asInt ?: 50000
@@ -217,7 +208,6 @@ class BridgeHttpServer(
             "pending_requests" to pendingCount.get(),
             "pool_size" to pool.currentSize,
             "pool_available" to pool.availableCount,
-            "max_queue_size" to maxQueueSize,
             "max_timeout" to maxTimeout,
             "max_wait" to maxWait,
             "uptime_seconds" to uptimeSeconds
@@ -334,5 +324,40 @@ class BridgeHttpServer(
 
     fun stopServer() {
         stop()
+    }
+}
+
+// [2026-03-12] スレッドプール付き AsyncRunner
+// NanoHTTPD デフォルトは無制限にスレッド生成するため、上限を設けてクラッシュを防止
+private class BoundRunner(
+    maxThreads: Int,
+    private val onLog: (String) -> Unit
+) : NanoHTTPD.AsyncRunner {
+    private val executor = java.util.concurrent.LinkedBlockingQueue<Runnable>().let { queue ->
+        ThreadPoolExecutor(
+            4, maxThreads, 60L, TimeUnit.SECONDS, queue
+        ).apply {
+            rejectedExecutionHandler = ThreadPoolExecutor.CallerRunsPolicy()
+        }
+    }
+    private val running = java.util.Collections.synchronizedList(mutableListOf<NanoHTTPD.ClientHandler>())
+
+    override fun closeAll() {
+        running.toList().forEach { it.close() }
+        executor.shutdown()
+    }
+
+    override fun closed(clientHandler: NanoHTTPD.ClientHandler) {
+        running.remove(clientHandler)
+    }
+
+    override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
+        running.add(clientHandler)
+        try {
+            executor.execute(clientHandler)
+        } catch (e: Exception) {
+            running.remove(clientHandler)
+            onLog("スレッドプール実行エラー: ${e.message}")
+        }
     }
 }

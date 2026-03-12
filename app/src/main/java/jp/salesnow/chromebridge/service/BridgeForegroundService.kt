@@ -1,4 +1,4 @@
-// Version: 1.6.0 | Updated: 2026-03-12
+// Version: 1.8.0 | Updated: 2026-03-12
 // [2026-03-08] バックグラウンドでサーバーを維持するための Foreground Service
 // [2026-03-08] Tunnel 管理（cloudflared）を統合
 // [2026-03-11] StatsDatabase / StatsCollector の初期化・ライフサイクル管理を追加
@@ -86,6 +86,14 @@ class BridgeForegroundService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("起動中..."))
         startServer()
 
+        // [2026-03-12] サービス再起動時に Tunnel も自動復旧
+        // START_STICKY で OS に再起動された場合、startTunnel() が呼ばれないため
+        val settings = SettingsRepository(this)
+        if (settings.tunnelToken.isNotBlank()) {
+            addLog("Tunnel 自動復旧: トークン設定済みのため Tunnel を起動します")
+            startTunnel()
+        }
+
         return START_STICKY
     }
 
@@ -117,15 +125,12 @@ class BridgeForegroundService : Service() {
         addLog("WebViewPool 初期化: ${concurrency}並列")
 
         val auth = AuthMiddleware { settings.apiKey }
-        val rateLimiter = RateLimiter()
 
-        // [2026-03-11] 設定値をサーバーに渡す
+        // [2026-03-12] レートリミッタ・キュー上限削除: Semaphore + TCP バックログで制御
         val newServer = BridgeHttpServer(
             port = port,
             pool = webViewPool!!,
             auth = auth,
-            rateLimiter = rateLimiter,
-            maxQueueSize = settings.queueSize,
             maxTimeout = settings.maxTimeout,
             maxWait = settings.maxWait,
             statsCollector = statsCollector,
@@ -157,7 +162,7 @@ class BridgeForegroundService : Service() {
         }
         server = newServer
 
-        addLog("サーバー起動: http://localhost:$port (並列=${concurrency}, キュー=${settings.queueSize}, timeout上限=${settings.maxTimeout}s, wait上限=${settings.maxWait}s)")
+        addLog("サーバー起動: http://localhost:$port (並列=${concurrency}, timeout上限=${settings.maxTimeout}s, wait上限=${settings.maxWait}s)")
         updateNotification("稼働中 — Port: $port")
     }
 
@@ -236,6 +241,8 @@ class BridgeForegroundService : Service() {
         if (logs.size > maxLogs) {
             logs.removeAt(0)
         }
+        // [2026-03-12] adb logcat でリモートデバッグ可能にする
+        android.util.Log.d("ChromeBridge", text)
     }
 
     private fun createNotificationChannel() {

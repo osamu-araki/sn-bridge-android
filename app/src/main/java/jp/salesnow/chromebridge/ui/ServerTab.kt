@@ -1,8 +1,8 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-03-12
 // [2026-03-11] MainScreen からサーバー状態・Tunnel・ログを分離
+// [2026-03-12] ログを LogTab に分離
 package jp.salesnow.chromebridge.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,7 +14,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -24,19 +23,16 @@ import jp.salesnow.chromebridge.ui.theme.*
 @Composable
 fun ServerTab(
     serverState: ServerState,
-    logs: List<String>,
     savedTunnelToken: String,
     savedTunnelDomain: String,
     onStartServer: () -> Unit,
     onStopServer: () -> Unit,
     onSaveTunnelSettings: (token: String, domain: String) -> Unit,
     onStartTunnel: () -> Unit,
-    onStopTunnel: () -> Unit,
-    onClearLogs: () -> Unit
+    onStopTunnel: () -> Unit
 ) {
     var tunnelTokenInput by remember(savedTunnelToken) { mutableStateOf(savedTunnelToken) }
     var tunnelDomainInput by remember(savedTunnelDomain) { mutableStateOf(savedTunnelDomain) }
-    var logsExpanded by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -96,7 +92,7 @@ fun ServerTab(
                         ) {
                             StatusChip("稼働時間", formatUptime(serverState.uptimeSeconds))
                             StatusChip("プール", "${serverState.poolAvailable}/${serverState.poolSize}")
-                            StatusChip("キュー上限", "${serverState.maxQueueSize}")
+                            StatusChip("処理中", "${serverState.pendingRequests}")
                         }
                     }
                 }
@@ -191,55 +187,6 @@ fun ServerTab(
             }
         }
 
-        // ログカード
-        item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                tonalElevation = 1.dp
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { logsExpanded = !logsExpanded }) {
-                            Text(
-                                "${if (logsExpanded) "▼" else "▶"} LOGS",
-                                color = Teal,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(Modifier.weight(1f))
-                        if (logsExpanded) {
-                            TextButton(onClick = onClearLogs) {
-                                Text("Clear", color = GrayLight, fontSize = 12.sp)
-                            }
-                        }
-                    }
-
-                    AnimatedVisibility(visible = logsExpanded) {
-                        Column {
-                            if (logs.isEmpty()) {
-                                Text(
-                                    "ログはありません",
-                                    fontSize = 12.sp,
-                                    color = GrayLight,
-                                    modifier = Modifier.padding(8.dp)
-                                )
-                            } else {
-                                logs.takeLast(20).forEach { log ->
-                                    Text(
-                                        log,
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = NavyDark,
-                                        modifier = Modifier.padding(vertical = 1.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

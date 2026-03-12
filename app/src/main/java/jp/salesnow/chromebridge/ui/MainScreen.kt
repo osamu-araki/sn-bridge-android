@@ -1,6 +1,7 @@
-// Version: 2.0.0 | Updated: 2026-03-11
+// Version: 2.1.0 | Updated: 2026-03-12
 // [2026-03-08] macOS 版 app/index.html + renderer.js の Compose 移植
 // [2026-03-11] 単一画面 → 3タブ構成（サーバー / 統計 / 設定）に全面改修
+// [2026-03-12] ログを独立タブ化 → 4タブ構成（サーバー / ログ / 統計 / 設定）
 package jp.salesnow.chromebridge.ui
 
 import androidx.compose.foundation.background
@@ -26,8 +27,7 @@ data class ServerState(
     val tunnelRunning: Boolean = false,
     // [2026-03-11] プール情報
     val poolSize: Int = 0,
-    val poolAvailable: Int = 0,
-    val maxQueueSize: Int = 20
+    val poolAvailable: Int = 0
 )
 
 @Composable
@@ -50,7 +50,7 @@ fun MainScreen(
     onClearLogs: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("サーバー", "統計", "設定")
+    val tabTitles = listOf("サーバー", "統計", "ログ", "設定")
 
     Column(
         modifier = Modifier
@@ -102,15 +102,13 @@ fun MainScreen(
         when (selectedTab) {
             0 -> ServerTab(
                 serverState = serverState,
-                logs = logs,
                 savedTunnelToken = savedTunnelToken,
                 savedTunnelDomain = savedTunnelDomain,
                 onStartServer = onStartServer,
                 onStopServer = onStopServer,
                 onSaveTunnelSettings = onSaveTunnelSettings,
                 onStartTunnel = onStartTunnel,
-                onStopTunnel = onStopTunnel,
-                onClearLogs = onClearLogs
+                onStopTunnel = onStopTunnel
             )
             1 -> StatsTab(
                 todayStats = todayStats,
@@ -118,7 +116,12 @@ fun MainScreen(
                 dailyStats = dailyStats,
                 monthlyStats = monthlyStats
             )
-            2 -> SettingsTab(
+            // [2026-03-12] ログを独立タブに分離
+            2 -> LogTab(
+                logs = logs,
+                onClearLogs = onClearLogs
+            )
+            3 -> SettingsTab(
                 settings = settings,
                 onSave = onSaveSettings
             )

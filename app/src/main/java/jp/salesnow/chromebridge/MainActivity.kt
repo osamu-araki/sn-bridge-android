@@ -81,8 +81,7 @@ class MainActivity : ComponentActivity() {
                                 uptimeSeconds = 0,
                                 tunnelRunning = svc.isTunnelRunning,
                                 poolSize = svc.getPoolSize(),
-                                poolAvailable = svc.getPoolAvailable(),
-                                maxQueueSize = settings.queueSize
+                                poolAvailable = svc.getPoolAvailable()
                             )
                             logs = svc.getLogs()
                         }
@@ -114,7 +113,6 @@ class MainActivity : ComponentActivity() {
                         port = settings.port,
                         apiKey = settings.apiKey,
                         concurrency = settings.concurrency,
-                        queueSize = settings.queueSize,
                         maxTimeout = settings.maxTimeout,
                         maxWait = settings.maxWait
                     ),
@@ -133,7 +131,6 @@ class MainActivity : ComponentActivity() {
                         settings.port = newSettings.port
                         settings.apiKey = newSettings.apiKey
                         settings.concurrency = newSettings.concurrency
-                        settings.queueSize = newSettings.queueSize
                         settings.maxTimeout = newSettings.maxTimeout
                         settings.maxWait = newSettings.maxWait
                         Toast.makeText(this@MainActivity, "設定を保存しました（再起動で反映）", Toast.LENGTH_SHORT).show()

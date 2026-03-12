@@ -1,4 +1,4 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-03-12
 // [2026-03-11] 全設定を1画面にまとめた設定タブ
 package jp.salesnow.chromebridge.ui
 
@@ -25,7 +25,6 @@ data class SettingsState(
     val port: Int = 3000,
     val apiKey: String = "",
     val concurrency: Int = 2,
-    val queueSize: Int = 20,
     val maxTimeout: Int = 60,
     val maxWait: Int = 10
 )
@@ -38,7 +37,6 @@ fun SettingsTab(
     var portInput by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKeyInput by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
     var concurrencyInput by remember(settings.concurrency) { mutableStateOf(settings.concurrency.toFloat()) }
-    var queueSizeInput by remember(settings.queueSize) { mutableStateOf(settings.queueSize.toString()) }
     var maxTimeoutInput by remember(settings.maxTimeout) { mutableStateOf(settings.maxTimeout.toString()) }
     var maxWaitInput by remember(settings.maxWait) { mutableStateOf(settings.maxWait.toString()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
@@ -111,7 +109,7 @@ fun SettingsTab(
 
                     // 並列数スライダー
                     Text(
-                        "WebView 並列数: ${concurrencyInput.toInt()}",
+                        "WebView 並列数: ${Math.round(concurrencyInput)}",
                         fontSize = 14.sp,
                         color = NavyDark
                     )
@@ -133,7 +131,7 @@ fun SettingsTab(
                         Text("8", fontSize = 11.sp, color = GrayLight)
                     }
                     // [2026-03-11] 注意事項
-                    if (concurrencyInput.toInt() >= 6) {
+                    if (Math.round(concurrencyInput) >= 6) {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             "※ 6以上はハイエンド端末推奨（メモリ不足の可能性あり）",
@@ -142,17 +140,6 @@ fun SettingsTab(
                         )
                     }
 
-                    Spacer(Modifier.height(12.dp))
-
-                    // キューサイズ
-                    OutlinedTextField(
-                        value = queueSizeInput,
-                        onValueChange = { queueSizeInput = it.filter { c -> c.isDigit() } },
-                        label = { Text("キューサイズ上限（5-100）") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
                 }
             }
         }
@@ -214,8 +201,7 @@ fun SettingsTab(
                         onSave(SettingsState(
                             port = portInput.toIntOrNull() ?: 3000,
                             apiKey = apiKeyInput,
-                            concurrency = concurrencyInput.toInt(),
-                            queueSize = (queueSizeInput.toIntOrNull() ?: 20).coerceIn(5, 100),
+                            concurrency = Math.round(concurrencyInput),
                             maxTimeout = (maxTimeoutInput.toIntOrNull() ?: 60).coerceIn(10, 120),
                             maxWait = (maxWaitInput.toIntOrNull() ?: 10).coerceIn(1, 30)
                         ))
