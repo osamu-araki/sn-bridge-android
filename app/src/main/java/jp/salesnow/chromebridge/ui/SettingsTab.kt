@@ -1,5 +1,6 @@
-// Version: 1.1.0 | Updated: 2026-03-12
+// Version: 1.5.0 | Updated: 2026-03-14
 // [2026-03-11] 全設定を1画面にまとめた設定タブ
+// [2026-03-13] チャレンジ認証のバックグラウンド通知トグル追加
 package jp.salesnow.chromebridge.ui
 
 import androidx.compose.foundation.layout.*
@@ -32,7 +33,28 @@ data class SettingsState(
 @Composable
 fun SettingsTab(
     settings: SettingsState,
-    onSave: (SettingsState) -> Unit
+    onSave: (SettingsState) -> Unit,
+    // [2026-03-14] 再起動確認ダイアログ用
+    serverRunning: Boolean = false,
+    onRestartServer: () -> Unit = {},
+    // [2026-03-14] Tunnel 設定
+    savedTunnelToken: String = "",
+    savedTunnelDomain: String = "",
+    onSaveTunnelSettings: (token: String, domain: String) -> Unit = { _, _ -> },
+    // [2026-03-13] チャレンジ認証のバックグラウンド通知（即時反映）
+    challengeNotify: Boolean = true,
+    onChallengeNotifyChange: (Boolean) -> Unit = {},
+    // [2026-03-13] Slack Webhook URL
+    slackWebhookUrl: String = "",
+    onSlackWebhookUrlChange: (String) -> Unit = {},
+    // [2026-03-14] 詳細ログモード
+    verboseLog: Boolean = false,
+    onVerboseLogChange: (Boolean) -> Unit = {},
+    // [2026-03-14] ログ自動バックアップ
+    logAutoBackup: Boolean = false,
+    onLogAutoBackupChange: (Boolean) -> Unit = {},
+    logBackupFolderName: String = "",
+    onSelectBackupFolder: () -> Unit = {}
 ) {
     var portInput by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKeyInput by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
@@ -40,6 +62,10 @@ fun SettingsTab(
     var maxTimeoutInput by remember(settings.maxTimeout) { mutableStateOf(settings.maxTimeout.toString()) }
     var maxWaitInput by remember(settings.maxWait) { mutableStateOf(settings.maxWait.toString()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
+    var showRestartDialog by remember { mutableStateOf(false) }
+    // [2026-03-14] Tunnel 設定
+    var tunnelTokenInput by remember(savedTunnelToken) { mutableStateOf(savedTunnelToken) }
+    var tunnelDomainInput by remember(savedTunnelDomain) { mutableStateOf(savedTunnelDomain) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -87,6 +113,60 @@ fun SettingsTab(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
+                }
+            }
+        }
+
+        // [2026-03-14] Tunnel 設定（ServerTab から移動）
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Tunnel 設定",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = tunnelTokenInput,
+                        onValueChange = { tunnelTokenInput = it },
+                        label = { Text("Tunnel Token") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = tunnelDomainInput,
+                        onValueChange = { tunnelDomainInput = it },
+                        label = { Text("Tunnel Domain（表示用）") },
+                        placeholder = { Text("例: my-tunnel.example.com") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        "※ Token は cloudflared tunnel token <name> で取得",
+                        fontSize = 12.sp,
+                        color = Teal
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    Button(
+                        onClick = { onSaveTunnelSettings(tunnelTokenInput, tunnelDomainInput) },
+                        modifier = Modifier.align(Alignment.End),
+                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    ) {
+                        Text("Tunnel 設定を保存")
+                    }
                 }
             }
         }
@@ -187,31 +267,233 @@ fun SettingsTab(
             }
         }
 
-        // 保存ボタン + 注意
+        // [2026-03-13] チャレンジ認証設定
         item {
-            Column {
-                Text(
-                    "※ 設定の反映にはサーバーの再起動が必要です",
-                    fontSize = 12.sp,
-                    color = Teal
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        onSave(SettingsState(
-                            port = portInput.toIntOrNull() ?: 3000,
-                            apiKey = apiKeyInput,
-                            concurrency = Math.round(concurrencyInput),
-                            maxTimeout = (maxTimeoutInput.toIntOrNull() ?: 60).coerceIn(10, 120),
-                            maxWait = (maxWaitInput.toIntOrNull() ?: 10).coerceIn(1, 30)
-                        ))
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
-                ) {
-                    Text("設定を保存")
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "認証チャレンジ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "バックグラウンド通知",
+                                fontSize = 14.sp,
+                                color = NavyDark
+                            )
+                            Text(
+                                "OFF: フォアグラウンド時のみ表示",
+                                fontSize = 11.sp,
+                                color = GrayLight
+                            )
+                        }
+                        Switch(
+                            checked = challengeNotify,
+                            onCheckedChange = onChallengeNotifyChange,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+
+                    // [2026-03-13] Slack Webhook URL
+                    Spacer(Modifier.height(16.dp))
+                    Divider()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Slack 通知",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "チャレンジ検知時に Slack へ通知します",
+                        fontSize = 11.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = slackWebhookUrl,
+                        onValueChange = onSlackWebhookUrlChange,
+                        label = { Text("Incoming Webhook URL") },
+                        placeholder = { Text("https://hooks.slack.com/services/...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
                 }
             }
         }
+
+        // [2026-03-14] ログ設定（詳細ログモード）
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "ログ設定",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "簡易ログ: 重要なイベントのみ表示\n詳細ログ: Tunnel 内部ログ等すべて表示",
+                        fontSize = 11.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            if (verboseLog) "詳細ログモード" else "簡易ログモード",
+                            fontSize = 14.sp,
+                            color = NavyDark
+                        )
+                        Switch(
+                            checked = verboseLog,
+                            onCheckedChange = onVerboseLogChange,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // [2026-03-14] ログ自動バックアップ設定
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "ログバックアップ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "ログファイルのローテーション時に自動でバックアップします",
+                        fontSize = 11.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "自動バックアップ",
+                            fontSize = 14.sp,
+                            color = NavyDark
+                        )
+                        Switch(
+                            checked = logAutoBackup,
+                            onCheckedChange = onLogAutoBackupChange,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    if (logAutoBackup) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = onSelectBackupFolder,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (logBackupFolderName.isNotBlank()) logBackupFolderName
+                                else "バックアップ先を選択...",
+                                color = if (logBackupFolderName.isNotBlank()) NavyDark else GrayLight
+                            )
+                        }
+                        if (logBackupFolderName.isBlank()) {
+                            Text(
+                                "Google ドライブのフォルダも選択できます",
+                                fontSize = 11.sp,
+                                color = GrayLight
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 保存ボタン
+        item {
+            Button(
+                onClick = {
+                    val newSettings = SettingsState(
+                        port = portInput.toIntOrNull() ?: 3000,
+                        apiKey = apiKeyInput,
+                        concurrency = Math.round(concurrencyInput),
+                        maxTimeout = (maxTimeoutInput.toIntOrNull() ?: 60).coerceIn(10, 120),
+                        maxWait = (maxWaitInput.toIntOrNull() ?: 10).coerceIn(1, 30)
+                    )
+                    onSave(newSettings)
+                    // サーバー稼働中かつ再起動が必要な設定が変更された場合のみダイアログ表示
+                    val needsRestart = serverRunning && (
+                        newSettings.port != settings.port ||
+                        newSettings.apiKey != settings.apiKey ||
+                        newSettings.concurrency != settings.concurrency ||
+                        newSettings.maxTimeout != settings.maxTimeout ||
+                        newSettings.maxWait != settings.maxWait
+                    )
+                    if (needsRestart) {
+                        showRestartDialog = true
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Teal)
+            ) {
+                Text("設定を保存")
+            }
+        }
+    }
+
+    // [2026-03-14] サーバー再起動確認ダイアログ
+    if (showRestartDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestartDialog = false },
+            title = { Text("サーバーを再起動しますか？") },
+            text = { Text("変更した設定を反映するにはサーバーの再起動が必要です。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRestartDialog = false
+                    onRestartServer()
+                }) {
+                    Text("再起動する", color = Teal)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestartDialog = false }) {
+                    Text("あとで")
+                }
+            }
+        )
     }
 }

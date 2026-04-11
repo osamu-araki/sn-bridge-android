@@ -1,11 +1,15 @@
-// Version: 1.1.0 | Updated: 2026-03-12
+// Version: 1.6.0 | Updated: 2026-03-14
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
+// [2026-03-13] メインスレッドデッドロック修正、SSL エラーハンドリング追加
+// [2026-03-13] Cookie 永続化: CookieManager でディスク保存、reCAPTCHA 対策
+// [2026-03-13] チャレンジ検知: Cloudflare 等の認証ページを検知し手動解除画面を表示
 package jp.salesnow.chromebridge.fetcher
 
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -13,6 +17,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -20,12 +25,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Semaphore で同時使用数を制御し、空き WebView を ConcurrentLinkedQueue で管理する。
  *
  * 注意: WebView の生成・操作はメインスレッドで行う必要がある。
- * acquire() は Semaphore で待機後、プールから WebView を取得する。
- * 呼び出し側は使用後に必ず release() を呼ぶこと。
+ * [2026-03-13] SSL エラーハンドリング追加（Service コンテキストの証明書検証問題対策）
+// [2026-03-13] Cookie 永続化: CookieManager でディスク保存、reCAPTCHA 対策
  */
 class WebViewPool(
     private val context: Context,
-    private val poolSize: Int
+    private val poolSize: Int,
+    private val onLog: (String) -> Unit = {}
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val semaphore = Semaphore(poolSize)
@@ -41,8 +47,12 @@ class WebViewPool(
     fun init() {
         val latch = CountDownLatch(1)
         val initAction = Runnable {
+            // [2026-03-13] Cookie 永続化: CookieManager を有効化
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.setAcceptCookie(true)
             for (i in 0 until poolSize) {
                 val wv = createWebView()
+                CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
                 allInstances.add(wv)
                 available.add(wv)
             }
@@ -63,6 +73,8 @@ class WebViewPool(
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.cacheMode = WebSettings.LOAD_DEFAULT
+            // [2026-03-13] データベースストレージ有効化（Cookie/localStorage 永続化）
+            settings.databaseEnabled = true
             // [2026-03-11] Chrome 互換の UA（WebView ブロック対策）
             settings.userAgentString = settings.userAgentString
                 .replace("; wv", "")
@@ -93,10 +105,11 @@ class WebViewPool(
      * 使用済みの WebView をプールに返却する。
      */
     fun release(webView: WebView) {
-        // [2026-03-11] 返却前にクリーンアップ（前のページの状態を引き継がない）
+        // [2026-03-13] stopLoading のみ。about:blank ロードは次の loadUrl で上書きされるため不要
         mainHandler.post {
             webView.stopLoading()
-            webView.loadUrl("about:blank")
+            // [2026-03-13] Cookie をディスクにフラッシュ
+            CookieManager.getInstance().flush()
         }
         available.add(webView)
         semaphore.release()
@@ -106,8 +119,6 @@ class WebViewPool(
      * フェッチリクエストを実行する。WebView の取得・返却を内部で管理する。
      */
     // [2026-03-12] acquire タイムアウトを短縮（5秒）して cloudflared の接続保持時間を削減
-    // WebView が空いていなければ即座に 503 を返し、cloudflared の接続を早期解放する
-    // 呼び出し側（n8n等）がリトライすることを前提とした設計
     private val acquireTimeoutMs = 5000L
 
     fun fetch(request: FetchRequest): FetchResult {
@@ -125,22 +136,57 @@ class WebViewPool(
         }
     }
 
+    // [2026-03-13] チャレンジ手動解除の追加待ち時間（秒）
+    private val challengeExtraTimeout = 120L
+
     private fun doFetch(wv: WebView, request: FetchRequest, workerId: Int): FetchResult {
         val latch = CountDownLatch(1)
         var jsResult: String? = null
         var pageError: String? = null
+        val challengeDetected = AtomicBoolean(false)
+        val challengeShown = AtomicBoolean(false)
 
         mainHandler.post {
             wv.webViewClient = object : WebViewClient() {
+                private var extracted = false
+
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    mainHandler.postDelayed({
-                        val js = if (request.mode == "dom") JsExtractors.EXTRACT_DOM
-                                 else JsExtractors.EXTRACT_TEXT
-                        wv.evaluateJavascript(js) { result ->
-                            jsResult = result
-                            latch.countDown()
+                    if (extracted) return
+                    if (url == null || url == "about:blank") return
+
+                    // [2026-03-13] タイトルでチャレンジページかどうか判定
+                    wv.evaluateJavascript("document.title") { titleRaw ->
+                        if (extracted) return@evaluateJavascript
+                        val title = titleRaw?.trim('"') ?: ""
+
+                        if (ChallengeManager.isChallengeTitle(title)) {
+                            // チャレンジページ検知 → ユーザーに画面を表示
+                            challengeDetected.set(true)
+                            if (!challengeShown.getAndSet(true)) {
+                                android.util.Log.d("ChromeBridge", "チャレンジ検知: $title (worker=$workerId)")
+                                onLog("チャレンジ検知: $title (worker=$workerId)")
+                                ChallengeManager.show(context, wv)
+                            }
+                            // latch は countDown しない → ユーザーの操作を待つ
+                        } else {
+                            // 通常ページ → コンテンツ抽出
+                            extracted = true
+                            // チャレンジ画面が出ていたら閉じる
+                            if (challengeShown.get()) {
+                                android.util.Log.d("ChromeBridge", "チャレンジ解除: $title (worker=$workerId)")
+                                onLog("チャレンジ解除: $title (worker=$workerId)")
+                                mainHandler.post { ChallengeManager.dismiss() }
+                            }
+                            mainHandler.postDelayed({
+                                val js = if (request.mode == "dom") JsExtractors.EXTRACT_DOM
+                                         else JsExtractors.EXTRACT_TEXT
+                                wv.evaluateJavascript(js) { result ->
+                                    jsResult = result
+                                    latch.countDown()
+                                }
+                            }, request.wait * 1000L)
                         }
-                    }, request.wait * 1000L)
+                    }
                 }
 
                 override fun onReceivedError(
@@ -150,18 +196,42 @@ class WebViewPool(
                     pageError = "WebView エラー: $description (code=$errorCode, worker=$workerId)"
                     latch.countDown()
                 }
+
+                // [2026-03-13] SSL エラー時にページ読み込みを続行
+                override fun onReceivedSslError(
+                    view: WebView?,
+                    handler: android.webkit.SslErrorHandler?,
+                    error: android.net.http.SslError?
+                ) {
+                    android.util.Log.w("ChromeBridge", "SSL エラー: ${error?.primaryError} url=${error?.url}")
+                    handler?.proceed()
+                }
             }
             wv.loadUrl(request.url)
         }
 
-        val completed = latch.await(request.timeout.toLong(), TimeUnit.SECONDS)
+        // [2026-03-13] 通常タイムアウトで待機
+        var completed = latch.await(request.timeout.toLong(), TimeUnit.SECONDS)
 
+        // チャレンジが検知されていた場合、追加で待機（ユーザーの手動操作時間）
+        if (!completed && challengeDetected.get()) {
+            android.util.Log.d("ChromeBridge", "チャレンジ待機中... 追加 ${challengeExtraTimeout}秒 (worker=$workerId)")
+            onLog("チャレンジ待機中... 追加 ${challengeExtraTimeout}秒 (worker=$workerId)")
+            completed = latch.await(challengeExtraTimeout, TimeUnit.SECONDS)
+        }
+
+        // タイムアウト時はチャレンジ画面も閉じる
         if (!completed) {
-            mainHandler.post { wv.stopLoading() }
-            return FetchResult(
-                ok = false, error = "timeout",
-                message = "${request.timeout}秒でタイムアウトしました (worker=$workerId)"
-            )
+            mainHandler.post {
+                wv.stopLoading()
+                if (challengeShown.get()) ChallengeManager.dismiss()
+            }
+            val msg = if (challengeDetected.get()) {
+                "認証タイムアウト（${challengeExtraTimeout}秒）(worker=$workerId)".also { onLog(it) }
+            } else {
+                "${request.timeout}秒でタイムアウトしました (worker=$workerId)"
+            }
+            return FetchResult(ok = false, error = "timeout", message = msg)
         }
 
         if (pageError != null) {
@@ -224,29 +294,23 @@ class WebViewPool(
                 synchronized(allInstances) { allInstances.remove(wv) }
                 shrunk++
             } else {
-                // 使用中なので戻す
                 available.add(wv)
                 break
             }
         }
     }
 
-    /**
-     * 現在のプールサイズ（アクティブな WebView 数）
-     */
     val currentSize: Int get() = synchronized(allInstances) { allInstances.size }
-
-    /**
-     * 現在の空き WebView 数
-     */
     val availableCount: Int get() = available.size
 
     /**
      * 全 WebView を破棄する。サーバー停止時に呼ぶ。
+     * [2026-03-13] メインスレッドから呼ばれた場合のデッドロックを修正
      */
     fun destroy() {
-        val latch = CountDownLatch(1)
-        mainHandler.post {
+        val destroyAction = Runnable {
+            // [2026-03-13] 破棄前に Cookie をフラッシュして永続化
+            CookieManager.getInstance().flush()
             synchronized(allInstances) {
                 for (wv in allInstances) {
                     wv.stopLoading()
@@ -255,8 +319,17 @@ class WebViewPool(
                 allInstances.clear()
             }
             available.clear()
-            latch.countDown()
         }
-        latch.await(10, TimeUnit.SECONDS)
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            destroyAction.run()
+        } else {
+            val latch = CountDownLatch(1)
+            mainHandler.post {
+                destroyAction.run()
+                latch.countDown()
+            }
+            latch.await(10, TimeUnit.SECONDS)
+        }
     }
 }

@@ -51,7 +51,7 @@ class DnsProxy(
                 onLog("DNS プロキシ起動: 127.0.0.1:53")
                 proxyLoop(socket4!!)
             } catch (e: Exception) {
-                onLog("DNS プロキシ (IPv4) エラー: ${e.message}")
+                onLog("DNS プロキシ (IPv4) WRN: ${e.message}")
             }
         }.apply {
             isDaemon = true
@@ -69,7 +69,7 @@ class DnsProxy(
                 onLog("DNS プロキシ起動: [::1]:53")
                 proxyLoop(socket6!!)
             } catch (e: Exception) {
-                onLog("DNS プロキシ (IPv6) エラー: ${e.message}")
+                onLog("DNS プロキシ (IPv6) WRN: ${e.message}")
             }
         }.apply {
             isDaemon = true

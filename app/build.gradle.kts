@@ -67,5 +67,8 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
 
+    // [2026-03-14] SAF DocumentFile（ログバックアップ用）
+    implementation("androidx.documentfile:documentfile:1.0.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

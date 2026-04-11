@@ -52,4 +52,29 @@ class SettingsRepository(context: Context) {
     var maxWait: Int
         get() = prefs.getInt("max_wait", 10).coerceIn(1, 30)
         set(value) = prefs.edit { putInt("max_wait", value.coerceIn(1, 30)) }
+
+    // [2026-03-13] チャレンジ認証のバックグラウンド通知（ON: 通知で画面表示、OFF: 通知なし）
+    var challengeNotify: Boolean
+        get() = prefs.getBoolean("challenge_notify", true)
+        set(value) = prefs.edit { putBoolean("challenge_notify", value) }
+
+    // [2026-03-13] Slack Incoming Webhook URL（チャレンジ検知時に通知）
+    var slackWebhookUrl: String
+        get() = prefs.getString("slack_webhook_url", "") ?: ""
+        set(value) = prefs.edit { putString("slack_webhook_url", value) }
+
+    // [2026-03-14] 詳細ログモード（false=簡易、true=詳細）
+    var verboseLog: Boolean
+        get() = prefs.getBoolean("verbose_log", false)
+        set(value) = prefs.edit { putBoolean("verbose_log", value) }
+
+    // [2026-03-14] ログ自動バックアップ（SAF フォルダへローテーション時にコピー）
+    var logAutoBackup: Boolean
+        get() = prefs.getBoolean("log_auto_backup", false)
+        set(value) = prefs.edit { putBoolean("log_auto_backup", value) }
+
+    // [2026-03-14] バックアップ先フォルダの URI（SAF で選択）
+    var logBackupUri: String
+        get() = prefs.getString("log_backup_uri", "") ?: ""
+        set(value) = prefs.edit { putString("log_backup_uri", value) }
 }

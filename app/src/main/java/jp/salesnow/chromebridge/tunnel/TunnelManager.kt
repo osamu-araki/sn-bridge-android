@@ -9,6 +9,7 @@ package jp.salesnow.chromebridge.tunnel
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import jp.salesnow.chromebridge.data.SettingsRepository
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -73,7 +74,7 @@ class TunnelManager(
     private fun setupSystemResolvConf(resolvConf: File) {
         try {
             if (File("/etc/resolv.conf").exists()) {
-                onLog("DNS: /etc/resolv.conf が存在します")
+                if (SettingsRepository(context).verboseLog) onLog("DNS: /etc/resolv.conf が存在します")
                 return
             }
             // bind mount を試みる（エミュレータ等 root 環境向け）
@@ -82,13 +83,14 @@ class TunnelManager(
             rt.exec(arrayOf("sh", "-c", "cp -a /etc/* /data/local/tmp/etc_overlay/ 2>/dev/null")).waitFor()
             rt.exec(arrayOf("sh", "-c", "cp ${resolvConf.absolutePath} /data/local/tmp/etc_overlay/resolv.conf")).waitFor()
             rt.exec(arrayOf("sh", "-c", "mount --bind /data/local/tmp/etc_overlay /etc")).waitFor()
+            val v = SettingsRepository(context).verboseLog
             if (File("/etc/resolv.conf").exists()) {
-                onLog("DNS: /etc/resolv.conf を配置しました")
+                if (v) onLog("DNS: /etc/resolv.conf を配置しました")
             } else {
-                onLog("DNS: /etc/resolv.conf の配置に失敗（実デバイスでは通常問題なし）")
+                if (v) onLog("DNS: /etc/resolv.conf の配置に失敗（実デバイスでは通常問題なし）")
             }
         } catch (e: Exception) {
-            onLog("DNS セットアップ: ${e.message}")
+            if (SettingsRepository(context).verboseLog) onLog("DNS セットアップ: ${e.message}")
         }
     }
 
@@ -131,7 +133,7 @@ class TunnelManager(
                     val pid = parts[1]
                     try {
                         Runtime.getRuntime().exec(arrayOf("kill", pid)).waitFor()
-                        onLog("orphan cloudflared プロセスを停止しました (PID: $pid)")
+                        if (SettingsRepository(context).verboseLog) onLog("orphan cloudflared プロセスを停止しました (PID: $pid)")
                     } catch (_: Exception) {}
                 }
             }
@@ -172,8 +174,15 @@ class TunnelManager(
             // [2026-03-08] Go DNS 対策: /etc/resolv.conf が無い場合に備え、
             // ローカル DNS プロキシを起動して [::1]:53 / 127.0.0.1:53 で応答する
             if (dnsProxy == null && !File("/etc/resolv.conf").exists()) {
-                onLog("DNS: /etc/resolv.conf が存在しないため DNS プロキシを起動します")
-                dnsProxy = DnsProxy(context) { msg -> onLog(msg) }
+                if (SettingsRepository(context).verboseLog) onLog("DNS: /etc/resolv.conf が存在しないため DNS プロキシを起動します")
+                // [2026-03-14] DNS WRN は簡易ログモードでは非表示
+                dnsProxy = DnsProxy(context) { msg ->
+                    if (msg.contains("WRN")) {
+                        if (SettingsRepository(context).verboseLog) onLog(msg)
+                    } else {
+                        onLog(msg)
+                    }
+                }
                 dnsProxy?.start()
                 Thread.sleep(500)
             }
@@ -279,12 +288,14 @@ class TunnelManager(
 
             // Tunnel ドメインが設定されていない場合はヘルスチェック不可
             if (lastDomain.isBlank()) {
-                onLog("Tunnel ヘルスチェック: ドメイン未設定のためスキップ")
+                if (SettingsRepository(context).verboseLog) onLog("Tunnel ヘルスチェック: ドメイン未設定のためスキップ")
                 return@Thread
             }
 
             val healthUrl = "https://$lastDomain/status"
-            onLog("Tunnel ヘルスチェック開始: $healthUrl (20秒間隔)")
+            if (SettingsRepository(context).verboseLog) {
+                onLog("Tunnel ヘルスチェック開始: $healthUrl (20秒間隔)")
+            }
 
             while (!Thread.currentThread().isInterrupted && autoRestart) {
                 try {
@@ -385,11 +396,13 @@ class TunnelManager(
         onLog("Tunnel 停止")
     }
 
-    // [2026-03-08] 実機デバッグ用に全ログを出力するモードを追加
+    // [2026-03-14] 簡易/詳細ログモード対応
+    // 簡易: 重要イベントのみ（接続確立、エラー、再接続、クラッシュ）
+    // 詳細: cloudflared の全出力を含む
     private fun parseTunnelLog(line: String) {
+        val verbose = SettingsRepository(context).verboseLog
         when {
             line.contains("Registered tunnel connection") -> {
-                // [2026-03-12] 接続成功時にリスタートカウンタをリセット
                 restartCount = 0
                 onLog("Tunnel 接続確立")
             }
@@ -397,17 +410,20 @@ class TunnelManager(
                 onLog("Tunnel プロトコル確立")
             line.contains("Starting tunnel") ->
                 onLog("Tunnel 開始")
+            // [2026-03-14] WRN は簡易ログモードでは非表示（ERR より先に判定）
+            line.contains("WRN") -> {
+                if (verbose) onLog("Tunnel: $line")
+            }
             line.contains("ERR") || line.contains("error") || line.contains("fatal") ->
                 onLog("Tunnel: $line")
             line.contains("Retrying") ->
                 onLog("Tunnel 再接続中...")
-            line.contains("WRN") ->
-                onLog("Tunnel: $line")
             line.contains("signal") || line.contains("panic") || line.contains("SIGILL") ->
                 onLog("Tunnel CRASH: $line")
-            else ->
-                // 実機デバッグ中は全ログを出力
-                onLog("cf: $line")
+            else -> {
+                // [2026-03-14] 詳細モード時のみ全ログを出力
+                if (verbose) onLog("cf: $line")
+            }
         }
     }
 }

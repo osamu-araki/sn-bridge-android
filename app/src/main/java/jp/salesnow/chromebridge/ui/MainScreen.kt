@@ -1,7 +1,8 @@
-// Version: 2.1.0 | Updated: 2026-03-12
+// Version: 2.5.0 | Updated: 2026-03-14
 // [2026-03-08] macOS 版 app/index.html + renderer.js の Compose 移植
 // [2026-03-11] 単一画面 → 3タブ構成（サーバー / 統計 / 設定）に全面改修
 // [2026-03-12] ログを独立タブ化 → 4タブ構成（サーバー / ログ / 統計 / 設定）
+// [2026-03-14] サーバー+統計を統合 → 3タブ構成（ダッシュボード / ログ / 設定）
 package jp.salesnow.chromebridge.ui
 
 import androidx.compose.foundation.background
@@ -33,24 +34,45 @@ data class ServerState(
 @Composable
 fun MainScreen(
     serverState: ServerState,
-    logs: List<String>,
+    // [2026-03-13] システムログと HTTP ログを分離
+    systemLogs: List<String>,
+    httpLogs: List<String>,
     settings: SettingsState,
     todayStats: DailyStatsData?,
     currentMonthStats: MonthlyStatsData?,
     dailyStats: List<DailyStatsData>,
     monthlyStats: List<MonthlyStatsData>,
+    // [2026-03-14] Tunnel 設定（設定タブに表示）
     savedTunnelToken: String,
     savedTunnelDomain: String,
     onStartServer: () -> Unit,
     onStopServer: () -> Unit,
     onSaveSettings: (SettingsState) -> Unit,
+    // [2026-03-14] サーバー再起動
+    onRestartServer: () -> Unit = {},
     onSaveTunnelSettings: (token: String, domain: String) -> Unit,
-    onStartTunnel: () -> Unit,
-    onStopTunnel: () -> Unit,
-    onClearLogs: () -> Unit
+    onClearSystemLogs: () -> Unit,
+    onClearHttpLogs: () -> Unit,
+    // [2026-03-13] ログ保存コールバック
+    onSaveLogs: () -> Unit = {},
+    // [2026-03-13] チャレンジ認証バックグラウンド通知
+    challengeNotify: Boolean = true,
+    onChallengeNotifyChange: (Boolean) -> Unit = {},
+    // [2026-03-13] Slack Webhook URL
+    slackWebhookUrl: String = "",
+    onSlackWebhookUrlChange: (String) -> Unit = {},
+    // [2026-03-14] 詳細ログモード
+    verboseLog: Boolean = false,
+    onVerboseLogChange: (Boolean) -> Unit = {},
+    // [2026-03-14] ログ自動バックアップ
+    logAutoBackup: Boolean = false,
+    onLogAutoBackupChange: (Boolean) -> Unit = {},
+    logBackupFolderName: String = "",
+    onSelectBackupFolder: () -> Unit = {}
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("サーバー", "統計", "ログ", "設定")
+    // [2026-03-14] 3タブ構成
+    val tabTitles = listOf("ダッシュボード", "ログ", "設定")
 
     Column(
         modifier = Modifier
@@ -77,7 +99,7 @@ fun MainScreen(
             }
         }
 
-        // [2026-03-11] タブバー
+        // タブバー
         TabRow(
             selectedTabIndex = selectedTab,
             containerColor = MaterialTheme.colorScheme.surface,
@@ -100,30 +122,42 @@ fun MainScreen(
 
         // タブコンテンツ
         when (selectedTab) {
-            0 -> ServerTab(
+            // [2026-03-14] ダッシュボード（サーバー状態 + 統計）
+            0 -> DashboardTab(
                 serverState = serverState,
-                savedTunnelToken = savedTunnelToken,
-                savedTunnelDomain = savedTunnelDomain,
+                tunnelDomain = savedTunnelDomain,
                 onStartServer = onStartServer,
                 onStopServer = onStopServer,
-                onSaveTunnelSettings = onSaveTunnelSettings,
-                onStartTunnel = onStartTunnel,
-                onStopTunnel = onStopTunnel
-            )
-            1 -> StatsTab(
                 todayStats = todayStats,
                 currentMonthStats = currentMonthStats,
                 dailyStats = dailyStats,
                 monthlyStats = monthlyStats
             )
-            // [2026-03-12] ログを独立タブに分離
-            2 -> LogTab(
-                logs = logs,
-                onClearLogs = onClearLogs
+            1 -> LogTab(
+                systemLogs = systemLogs,
+                httpLogs = httpLogs,
+                onClearSystemLogs = onClearSystemLogs,
+                onClearHttpLogs = onClearHttpLogs,
+                onSaveLogs = onSaveLogs
             )
-            3 -> SettingsTab(
+            2 -> SettingsTab(
                 settings = settings,
-                onSave = onSaveSettings
+                onSave = onSaveSettings,
+                serverRunning = serverState.running,
+                onRestartServer = onRestartServer,
+                savedTunnelToken = savedTunnelToken,
+                savedTunnelDomain = savedTunnelDomain,
+                onSaveTunnelSettings = onSaveTunnelSettings,
+                challengeNotify = challengeNotify,
+                onChallengeNotifyChange = onChallengeNotifyChange,
+                slackWebhookUrl = slackWebhookUrl,
+                onSlackWebhookUrlChange = onSlackWebhookUrlChange,
+                verboseLog = verboseLog,
+                onVerboseLogChange = onVerboseLogChange,
+                logAutoBackup = logAutoBackup,
+                onLogAutoBackupChange = onLogAutoBackupChange,
+                logBackupFolderName = logBackupFolderName,
+                onSelectBackupFolder = onSelectBackupFolder
             )
         }
 

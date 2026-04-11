@@ -1,10 +1,11 @@
-// Version: 1.8.0 | Updated: 2026-03-12
+// Version: 2.1.0 | Updated: 2026-03-14
 // [2026-03-08] バックグラウンドでサーバーを維持するための Foreground Service
 // [2026-03-08] Tunnel 管理（cloudflared）を統合
 // [2026-03-11] StatsDatabase / StatsCollector の初期化・ライフサイクル管理を追加
 // [2026-03-11] WebViewPool による並列処理対応、設定値の反映
 // [2026-03-11] onTrimMemory でメモリ逼迫時に WebViewPool を縮小
 // [2026-03-12] BindException 対策: 起動時に既存サーバー停止＋リトライ、onTaskRemoved でクリーンアップ
+// [2026-03-13] メインスレッドデッドロック修正: Thread.sleep をメインスレッドで呼ばない
 package jp.salesnow.chromebridge.service
 
 import android.app.Notification
@@ -16,10 +17,12 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import jp.salesnow.chromebridge.MainActivity
 import jp.salesnow.chromebridge.R
 import jp.salesnow.chromebridge.data.SettingsRepository
+import jp.salesnow.chromebridge.data.LogFileWriter
 import jp.salesnow.chromebridge.data.StatsCollector
 import jp.salesnow.chromebridge.data.StatsDatabase
 import jp.salesnow.chromebridge.data.StatsRepository
@@ -49,7 +52,11 @@ class BridgeForegroundService : Service() {
     private var statsDatabase: StatsDatabase? = null
     private var statsCollector: StatsCollector? = null
     private var statsRepository: StatsRepository? = null
-    private val logs = CopyOnWriteArrayList<String>()
+    // [2026-03-14] ログ自動ファイル保存
+    private var logFileWriter: LogFileWriter? = null
+    // [2026-03-13] システムログと HTTP ログを分離
+    private val systemLogs = CopyOnWriteArrayList<String>()
+    private val httpLogs = CopyOnWriteArrayList<String>()
     private val maxLogs = 100
 
     inner class LocalBinder : Binder() {
@@ -86,14 +93,6 @@ class BridgeForegroundService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("起動中..."))
         startServer()
 
-        // [2026-03-12] サービス再起動時に Tunnel も自動復旧
-        // START_STICKY で OS に再起動された場合、startTunnel() が呼ばれないため
-        val settings = SettingsRepository(this)
-        if (settings.tunnelToken.isNotBlank()) {
-            addLog("Tunnel 自動復旧: トークン設定済みのため Tunnel を起動します")
-            startTunnel()
-        }
-
         return START_STICKY
     }
 
@@ -119,14 +118,19 @@ class BridgeForegroundService : Service() {
             addLog("統計データクリーンアップ失敗: ${e.message}")
         }
 
+        // [2026-03-14] ログファイル自動保存の初期化
+        logFileWriter = LogFileWriter(this)
+
         // [2026-03-11] WebViewPool 初期化（設定された並列数で）
         val concurrency = settings.concurrency
-        webViewPool = WebViewPool(this, concurrency).also { it.init() }
+        // [2026-03-14] チャレンジ関連ログを HTTP ログに送出
+        webViewPool = WebViewPool(this, concurrency) { msg -> addHttpLog(msg) }.also { it.init() }
         addLog("WebViewPool 初期化: ${concurrency}並列")
 
         val auth = AuthMiddleware { settings.apiKey }
 
         // [2026-03-12] レートリミッタ・キュー上限削除: Semaphore + TCP バックログで制御
+        // [2026-03-13] HTTP サーバーのログは HTTP ログに分離
         val newServer = BridgeHttpServer(
             port = port,
             pool = webViewPool!!,
@@ -136,34 +140,47 @@ class BridgeForegroundService : Service() {
             statsCollector = statsCollector,
             statsRepository = statsRepository
         ) { msg ->
-            addLog(msg)
+            addHttpLog(msg)
         }
 
-        // [2026-03-12] BindException をキャッチしてリトライ（ポートが TIME_WAIT の場合に対応）
+        // [2026-03-13] BindException をキャッチしてリトライ（メインスレッドをブロックしない）
         try {
             newServer.start()
         } catch (e: java.io.IOException) {
             addLog("ポート $port がまだ使用中です。1秒後にリトライします...")
-            try {
-                Thread.sleep(1000)
-                newServer.start()
-            } catch (e2: java.io.IOException) {
-                addLog("サーバー起動失敗: ポート $port を確保できません (${e2.message})")
-                webViewPool?.destroy()
-                webViewPool = null
-                statsCollector?.destroy()
-                statsCollector = null
-                statsDatabase?.close()
-                statsDatabase = null
-                statsRepository = null
-                updateNotification("起動失敗 — Port: $port が使用中")
-                return
-            }
+            val retryServer = newServer
+            val retryPool = webViewPool
+            val retryCollector = statsCollector
+            val retryDb = statsDatabase
+            android.os.Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    retryServer.start()
+                    server = retryServer
+                    addLog("サーバー起動（リトライ成功）: http://localhost:$port")
+                    updateNotification("稼働中 — Port: $port")
+                } catch (e2: java.io.IOException) {
+                    addLog("サーバー起動失敗: ポート $port を確保できません (${e2.message})")
+                    retryPool?.destroy()
+                    webViewPool = null
+                    retryCollector?.destroy()
+                    statsCollector = null
+                    retryDb?.close()
+                    statsDatabase = null
+                    statsRepository = null
+                    updateNotification("起動失敗 — Port: $port が使用中")
+                }
+            }, 1000)
+            return
         }
         server = newServer
 
         addLog("サーバー起動: http://localhost:$port (並列=${concurrency}, timeout上限=${settings.maxTimeout}s, wait上限=${settings.maxWait}s)")
         updateNotification("稼働中 — Port: $port")
+
+        // [2026-03-14] トークン設定済みなら Tunnel も自動起動
+        if (settings.tunnelToken.isNotBlank()) {
+            startTunnel()
+        }
     }
 
     // [2026-03-08] Tunnel の開始・停止
@@ -217,6 +234,9 @@ class BridgeForegroundService : Service() {
         try { statsDatabase?.close() } catch (_: Exception) {}
         statsDatabase = null
         statsRepository = null
+        // [2026-03-14] ログファイルの最終フラッシュ
+        try { logFileWriter?.destroy() } catch (_: Exception) {}
+        logFileWriter = null
     }
 
     val isRunning: Boolean get() = server != null
@@ -226,23 +246,46 @@ class BridgeForegroundService : Service() {
     // [2026-03-11] 統計データへのアクセス（UI/API から利用）
     fun getStatsRepository(): StatsRepository? = statsRepository
 
+    // [2026-03-14] ログファイルへのアクセス（エクスポート用）
+    fun getLogFileWriter(): LogFileWriter? = logFileWriter
+
     // [2026-03-11] WebViewPool 状態へのアクセス（UI から利用）
     fun getPoolSize(): Int = webViewPool?.currentSize ?: 0
     fun getPoolAvailable(): Int = webViewPool?.availableCount ?: 0
 
-    fun getLogs(): List<String> = logs.toList()
+    // [2026-03-13] システムログ・HTTP ログ個別取得
+    fun getSystemLogs(): List<String> = systemLogs.toList()
+    fun getHttpLogs(): List<String> = httpLogs.toList()
+    fun getLogs(): List<String> = (systemLogs + httpLogs).sortedBy { it.substringBefore("]") }
 
-    fun clearLogs() = logs.clear()
+    fun clearSystemLogs() = systemLogs.clear()
+    fun clearHttpLogs() = httpLogs.clear()
+    fun clearLogs() { systemLogs.clear(); httpLogs.clear() }
 
+    // [2026-03-13] システムログ（サーバー起動・停止、Tunnel、プール、メモリ等）
     private fun addLog(text: String) {
         val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.JAPAN)
             .format(java.util.Date())
-        logs.add("[$ts] $text")
-        if (logs.size > maxLogs) {
-            logs.removeAt(0)
+        val formatted = "[$ts] $text"
+        systemLogs.add(formatted)
+        if (systemLogs.size > maxLogs) {
+            systemLogs.removeAt(0)
         }
-        // [2026-03-12] adb logcat でリモートデバッグ可能にする
+        logFileWriter?.appendSystem(formatted)
         android.util.Log.d("ChromeBridge", text)
+    }
+
+    // [2026-03-13] HTTP ログ（リクエスト受信・成功・エラー・チャレンジ認証）
+    private fun addHttpLog(text: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.JAPAN)
+            .format(java.util.Date())
+        val formatted = "[$ts] $text"
+        httpLogs.add(formatted)
+        if (httpLogs.size > maxLogs) {
+            httpLogs.removeAt(0)
+        }
+        logFileWriter?.appendHttp(formatted)
+        android.util.Log.d("ChromeBridge.HTTP", text)
     }
 
     private fun createNotificationChannel() {

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Version: 1.0.0 | Updated: 2026-03-08 -->
+<!-- Version: 1.1.0 | Updated: 2026-03-13 -->
+<!-- [2026-03-13] ChallengeActivity 追加（Cloudflare 認証の手動解除画面） -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -7,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- [2026-03-13] チャレンジ認証画面をバックグラウンドから表示するため -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:allowBackup="true"
@@ -25,6 +28,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- [2026-03-13] Cloudflare チャレンジ手動認証画面 -->
+        <activity
+            android:name=".ChallengeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ChromeBridge"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
 
         <service
             android:name=".service.BridgeForegroundService"

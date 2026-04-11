@@ -1,16 +1,19 @@
-// Version: 1.0.0 | Updated: 2026-03-11
-// [2026-03-11] 日別・月別統計の表示タブ
+// Version: 1.0.0 | Updated: 2026-03-14
+// [2026-03-14] サーバータブ + 統計タブを統合したダッシュボード
 package jp.salesnow.chromebridge.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -20,7 +23,11 @@ import jp.salesnow.chromebridge.data.MonthlyStatsData
 import jp.salesnow.chromebridge.ui.theme.*
 
 @Composable
-fun StatsTab(
+fun DashboardTab(
+    serverState: ServerState,
+    tunnelDomain: String,
+    onStartServer: () -> Unit,
+    onStopServer: () -> Unit,
     todayStats: DailyStatsData?,
     currentMonthStats: MonthlyStatsData?,
     dailyStats: List<DailyStatsData>,
@@ -32,13 +39,109 @@ fun StatsTab(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // サマリーカード（今日 / 今月）
+        // サーバー状態カード
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .clip(CircleShape)
+                                .background(if (serverState.running) Teal else GrayLight)
+                        )
+                        Spacer(Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "サーバー",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = NavyDark
+                            )
+                            if (serverState.running) {
+                                Text(
+                                    "Port: ${serverState.port}  |  並列: ${serverState.poolSize}  |  処理中: ${serverState.pendingRequests}",
+                                    fontSize = 13.sp,
+                                    color = GrayLight
+                                )
+                            } else {
+                                Text("停止中", fontSize = 13.sp, color = GrayLight)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = { if (serverState.running) onStopServer() else onStartServer() },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (serverState.running) GrayLight else Teal
+                            )
+                        ) {
+                            Text(if (serverState.running) "停止" else "起動")
+                        }
+                    }
+
+                    if (serverState.running) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            StatusChip("稼働時間", formatUptime(serverState.uptimeSeconds))
+                            StatusChip("プール", "${serverState.poolAvailable}/${serverState.poolSize}")
+                            StatusChip("処理中", "${serverState.pendingRequests}")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tunnel 状態表示
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(if (serverState.tunnelRunning) Teal else GrayLight)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            "Tunnel",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = NavyDark
+                        )
+                        Text(
+                            if (serverState.tunnelRunning) {
+                                if (tunnelDomain.isNotBlank()) tunnelDomain else "接続中"
+                            } else "停止中",
+                            fontSize = 13.sp,
+                            color = GrayLight
+                        )
+                    }
+                }
+            }
+        }
+
+        // 今日 / 今月サマリーカード
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 今日のサマリー
                 SummaryCard(
                     modifier = Modifier.weight(1f),
                     title = "今日",
@@ -47,7 +150,6 @@ fun StatsTab(
                     avgDuration = todayStats?.avgDurationMs ?: 0,
                     totalBytes = todayStats?.totalBytes ?: 0
                 )
-                // 今月のサマリー
                 SummaryCard(
                     modifier = Modifier.weight(1f),
                     title = "今月",
@@ -59,7 +161,7 @@ fun StatsTab(
             }
         }
 
-        // [2026-03-11] 日別 / 月別切り替えタブ
+        // 日別 / 月別切り替えタブ
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -71,7 +173,7 @@ fun StatsTab(
                     label = { Text("日別") },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Teal,
-                        selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                        selectedLabelColor = Color.White
                     )
                 )
                 Spacer(Modifier.width(8.dp))
@@ -81,7 +183,7 @@ fun StatsTab(
                     label = { Text("月別") },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Teal,
-                        selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                        selectedLabelColor = Color.White
                     )
                 )
             }
@@ -123,6 +225,21 @@ fun StatsTab(
             }
         }
     }
+}
+
+@Composable
+private fun StatusChip(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = NavyDark)
+        Text(label, fontSize = 11.sp, color = GrayLight)
+    }
+}
+
+private fun formatUptime(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return if (h > 0) "${h}h ${m}m" else "${m}m ${s}s"
 }
 
 @Composable
@@ -200,7 +317,6 @@ private fun DailyStatsRow(stats: DailyStatsData) {
         tonalElevation = 1.dp
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // ヘッダー行
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     stats.dateKey,
@@ -219,7 +335,6 @@ private fun DailyStatsRow(stats: DailyStatsData) {
 
             Spacer(Modifier.height(8.dp))
 
-            // メトリクス行
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -231,7 +346,6 @@ private fun DailyStatsRow(stats: DailyStatsData) {
                 MetricItem("通信量", formatBytes(stats.totalBytes), NavyDark)
             }
 
-            // エラー内訳（エラーがある場合のみ）
             if (stats.errorCount > 0) {
                 Spacer(Modifier.height(8.dp))
                 Divider(color = GrayLight.copy(alpha = 0.3f))
@@ -299,7 +413,7 @@ private fun MonthlyStatsRow(stats: MonthlyStatsData) {
 }
 
 @Composable
-private fun MetricItem(label: String, value: String, color: androidx.compose.ui.graphics.Color) {
+private fun MetricItem(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = color)
         Text(label, fontSize = 10.sp, color = GrayLight)
