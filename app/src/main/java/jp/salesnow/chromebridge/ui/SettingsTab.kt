@@ -1,8 +1,11 @@
-// Version: 1.5.0 | Updated: 2026-03-14
+// Version: 1.6.0 | Updated: 2026-04-11
 // [2026-03-11] 全設定を1画面にまとめた設定タブ
 // [2026-03-13] チャレンジ認証のバックグラウンド通知トグル追加
+// [2026-04-11] オーバーレイ権限（タップ不要起動）の状態表示と付与ボタン追加
 package jp.salesnow.chromebridge.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,12 +17,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import jp.salesnow.chromebridge.ui.theme.*
 
 data class SettingsState(
@@ -269,6 +276,22 @@ fun SettingsTab(
 
         // [2026-03-13] チャレンジ認証設定
         item {
+            // [2026-04-11] オーバーレイ権限の状態を lifecycle で追従
+            val context = LocalContext.current
+            val lifecycleOwner = LocalLifecycleOwner.current
+            var canDrawOverlays by remember {
+                mutableStateOf(android.provider.Settings.canDrawOverlays(context))
+            }
+            DisposableEffect(lifecycleOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
+                        canDrawOverlays = android.provider.Settings.canDrawOverlays(context)
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+            }
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -282,6 +305,48 @@ fun SettingsTab(
                         color = NavyDark
                     )
                     Spacer(Modifier.height(8.dp))
+
+                    // [2026-04-11] タップ不要起動（オーバーレイ権限）
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "タップ不要で直接起動",
+                                fontSize = 14.sp,
+                                color = NavyDark
+                            )
+                            Text(
+                                if (canDrawOverlays) "有効（オーバーレイ権限あり）"
+                                else "通知タップが必要な状態です",
+                                fontSize = 11.sp,
+                                color = if (canDrawOverlays) Teal else GrayLight
+                            )
+                        }
+                        Switch(
+                            checked = canDrawOverlays,
+                            onCheckedChange = {
+                                // ON/OFF どちらもシステム設定画面へ誘導
+                                val intent = Intent(
+                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    Divider()
+                    Spacer(Modifier.height(12.dp))
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -294,7 +359,7 @@ fun SettingsTab(
                                 color = NavyDark
                             )
                             Text(
-                                "OFF: フォアグラウンド時のみ表示",
+                                "オーバーレイ権限が無い場合のフォールバック",
                                 fontSize = 11.sp,
                                 color = GrayLight
                             )

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Version: 1.1.0 | Updated: 2026-03-13 -->
+<!-- Version: 1.2.0 | Updated: 2026-04-11 -->
 <!-- [2026-03-13] ChallengeActivity 追加（Cloudflare 認証の手動解除画面） -->
+<!-- [2026-04-11] SYSTEM_ALERT_WINDOW 追加（タップ不要でチャレンジ画面を直接起動） -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -10,6 +11,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- [2026-03-13] チャレンジ認証画面をバックグラウンドから表示するため -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- [2026-04-11] バックグラウンド Activity 起動制限の回避（通知タップをスキップ） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="true"

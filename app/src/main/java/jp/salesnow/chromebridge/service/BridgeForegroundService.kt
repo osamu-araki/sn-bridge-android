@@ -124,7 +124,13 @@ class BridgeForegroundService : Service() {
         // [2026-03-11] WebViewPool 初期化（設定された並列数で）
         val concurrency = settings.concurrency
         // [2026-03-14] チャレンジ関連ログを HTTP ログに送出
-        webViewPool = WebViewPool(this, concurrency) { msg -> addHttpLog(msg) }.also { it.init() }
+        // [2026-04-12] チャレンジ成否を StatsCollector に記録
+        webViewPool = WebViewPool(
+            context = this,
+            poolSize = concurrency,
+            onLog = { msg -> addHttpLog(msg) },
+            onChallengeResult = { success -> statsCollector?.recordChallenge(success) }
+        ).also { it.init() }
         addLog("WebViewPool 初期化: ${concurrency}並列")
 
         val auth = AuthMiddleware { settings.apiKey }

@@ -1,5 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-04-12
 // [2026-03-11] 統計データ永続化用の SQLite データベース
+// [2026-04-12] DB v2: チャレンジ統計カラム (challenge_success, challenge_failure) を追加
 package jp.salesnow.chromebridge.data
 
 import android.content.Context
@@ -11,7 +12,7 @@ class StatsDatabase(context: Context) : SQLiteOpenHelper(
 ) {
     companion object {
         const val DATABASE_NAME = "chrome_bridge_stats.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -50,7 +51,9 @@ class StatsDatabase(context: Context) : SQLiteOpenHelper(
                 error_queue      INTEGER NOT NULL DEFAULT 0,
                 error_auth       INTEGER NOT NULL DEFAULT 0,
                 error_rate       INTEGER NOT NULL DEFAULT 0,
-                error_parse      INTEGER NOT NULL DEFAULT 0
+                error_parse      INTEGER NOT NULL DEFAULT 0,
+                challenge_success INTEGER NOT NULL DEFAULT 0,
+                challenge_failure INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
 
@@ -64,13 +67,20 @@ class StatsDatabase(context: Context) : SQLiteOpenHelper(
                 total_bytes      INTEGER NOT NULL DEFAULT 0,
                 total_duration   INTEGER NOT NULL DEFAULT 0,
                 avg_duration_ms  INTEGER NOT NULL DEFAULT 0,
-                max_duration_ms  INTEGER NOT NULL DEFAULT 0
+                max_duration_ms  INTEGER NOT NULL DEFAULT 0,
+                challenge_success INTEGER NOT NULL DEFAULT 0,
+                challenge_failure INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // 将来のマイグレーション用
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE daily_stats ADD COLUMN challenge_success INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE daily_stats ADD COLUMN challenge_failure INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE monthly_stats ADD COLUMN challenge_success INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE monthly_stats ADD COLUMN challenge_failure INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     /**

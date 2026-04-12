@@ -1,5 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-04-12
 // [2026-03-11] リクエストメトリクスの収集・バッファリング・SQLite バッチ書き込み
+// [2026-04-12] チャレンジ成功/失敗の統計記録を追加
 package jp.salesnow.chromebridge.data
 
 import android.content.ContentValues
@@ -78,6 +79,30 @@ class StatsCollector(private val database: StatsDatabase) {
     }
 
     /**
+     * チャレンジ結果を daily_stats / monthly_stats に即時反映する。
+     * リクエスト処理とは独立したイベントなので、バッファ経由ではなく直接書き込む。
+     */
+    fun recordChallenge(success: Boolean) {
+        handler.post {
+            try {
+                val db = database.writableDatabase
+                val now = System.currentTimeMillis()
+                val dateKey = dateFormat.format(Date(now))
+                val monthKey = monthFormat.format(Date(now))
+                val col = if (success) "challenge_success" else "challenge_failure"
+
+                db.execSQL("INSERT OR IGNORE INTO daily_stats (date_key) VALUES (?)", arrayOf<Any>(dateKey))
+                db.execSQL("UPDATE daily_stats SET $col = $col + 1 WHERE date_key = ?", arrayOf<Any>(dateKey))
+
+                db.execSQL("INSERT OR IGNORE INTO monthly_stats (month_key) VALUES (?)", arrayOf<Any>(monthKey))
+                db.execSQL("UPDATE monthly_stats SET $col = $col + 1 WHERE month_key = ?", arrayOf<Any>(monthKey))
+            } catch (e: Exception) {
+                android.util.Log.w("ChromeBridge", "チャレンジ統計記録失敗: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * バッファの内容を SQLite に書き込む
      */
     private fun flush() {
@@ -132,6 +157,8 @@ class StatsCollector(private val database: StatsDatabase) {
         }
     }
 
+    // [2026-04-12] INSERT OR IGNORE + UPDATE パターン（Android 9 / SQLite 3.22 互換）
+    // UPSERT (ON CONFLICT ... DO UPDATE) は SQLite 3.24+ 必須で API 26-28 では使えない
     private fun upsertDailyStats(db: android.database.sqlite.SQLiteDatabase, dateKey: String, m: RequestMetrics) {
         val errorColumn = when (m.errorCode) {
             "timeout" -> "error_timeout"
@@ -143,39 +170,27 @@ class StatsCollector(private val database: StatsDatabase) {
             else -> null
         }
 
-        // [2026-03-11] UPSERT: 存在しなければ INSERT、存在すれば UPDATE
+        db.execSQL("INSERT OR IGNORE INTO daily_stats (date_key) VALUES (?)", arrayOf<Any>(dateKey))
         db.execSQL("""
-            INSERT INTO daily_stats (date_key, total_requests, success_count, error_count, total_bytes, total_duration, max_duration_ms)
-            VALUES (?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(date_key) DO UPDATE SET
+            UPDATE daily_stats SET
                 total_requests = total_requests + 1,
                 success_count = success_count + ?,
                 error_count = error_count + ?,
                 total_bytes = total_bytes + ?,
                 total_duration = total_duration + ?,
-                max_duration_ms = MAX(max_duration_ms, ?)
+                max_duration_ms = MAX(max_duration_ms, ?),
+                avg_duration_ms = (total_duration + ?) / MAX(total_requests + 1, 1)
+            WHERE date_key = ?
         """.trimIndent(), arrayOf<Any>(
-            dateKey,
             if (m.success) 1 else 0,
             if (m.success) 0 else 1,
             m.responseBytes,
             m.durationMs,
             m.durationMs,
-            // UPDATE 部分
-            if (m.success) 1 else 0,
-            if (m.success) 0 else 1,
-            m.responseBytes,
             m.durationMs,
-            m.durationMs
+            dateKey
         ))
 
-        // [2026-03-11] avg_duration_ms を再計算
-        db.execSQL(
-            "UPDATE daily_stats SET avg_duration_ms = total_duration / MAX(total_requests, 1) WHERE date_key = ?",
-            arrayOf(dateKey)
-        )
-
-        // [2026-03-11] エラー種別カウントをインクリメント
         if (errorColumn != null) {
             db.execSQL(
                 "UPDATE daily_stats SET $errorColumn = $errorColumn + 1 WHERE date_key = ?",
@@ -185,35 +200,26 @@ class StatsCollector(private val database: StatsDatabase) {
     }
 
     private fun upsertMonthlyStats(db: android.database.sqlite.SQLiteDatabase, monthKey: String, m: RequestMetrics) {
+        db.execSQL("INSERT OR IGNORE INTO monthly_stats (month_key) VALUES (?)", arrayOf<Any>(monthKey))
         db.execSQL("""
-            INSERT INTO monthly_stats (month_key, total_requests, success_count, error_count, total_bytes, total_duration, max_duration_ms)
-            VALUES (?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(month_key) DO UPDATE SET
+            UPDATE monthly_stats SET
                 total_requests = total_requests + 1,
                 success_count = success_count + ?,
                 error_count = error_count + ?,
                 total_bytes = total_bytes + ?,
                 total_duration = total_duration + ?,
-                max_duration_ms = MAX(max_duration_ms, ?)
+                max_duration_ms = MAX(max_duration_ms, ?),
+                avg_duration_ms = (total_duration + ?) / MAX(total_requests + 1, 1)
+            WHERE month_key = ?
         """.trimIndent(), arrayOf<Any>(
-            monthKey,
             if (m.success) 1 else 0,
             if (m.success) 0 else 1,
             m.responseBytes,
             m.durationMs,
             m.durationMs,
-            // UPDATE 部分
-            if (m.success) 1 else 0,
-            if (m.success) 0 else 1,
-            m.responseBytes,
             m.durationMs,
-            m.durationMs
+            monthKey
         ))
-
-        db.execSQL(
-            "UPDATE monthly_stats SET avg_duration_ms = total_duration / MAX(total_requests, 1) WHERE month_key = ?",
-            arrayOf(monthKey)
-        )
     }
 
     private fun scheduleFlush() {

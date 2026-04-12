@@ -1,5 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-03-11
+// Version: 1.1.0 | Updated: 2026-04-12
 // [2026-03-11] UI・API から統計データを読み取るためのリポジトリ
+// [2026-04-12] チャレンジ統計 (challengeSuccess, challengeFailure) を追加
 package jp.salesnow.chromebridge.data
 
 /**
@@ -19,7 +20,9 @@ data class DailyStatsData(
     val errorQueue: Int,
     val errorAuth: Int,
     val errorRate: Int,
-    val errorParse: Int
+    val errorParse: Int,
+    val challengeSuccess: Int = 0,
+    val challengeFailure: Int = 0
 ) {
     val successRate: Double
         get() = if (totalRequests > 0) successCount.toDouble() / totalRequests else 0.0
@@ -35,7 +38,9 @@ data class MonthlyStatsData(
     val errorCount: Long,
     val totalBytes: Long,
     val avgDurationMs: Long,
-    val maxDurationMs: Long
+    val maxDurationMs: Long,
+    val challengeSuccess: Int = 0,
+    val challengeFailure: Int = 0
 ) {
     val successRate: Double
         get() = if (totalRequests > 0) successCount.toDouble() / totalRequests else 0.0
@@ -72,7 +77,9 @@ class StatsRepository(private val database: StatsDatabase) {
                     errorQueue = it.getInt(it.getColumnIndexOrThrow("error_queue")),
                     errorAuth = it.getInt(it.getColumnIndexOrThrow("error_auth")),
                     errorRate = it.getInt(it.getColumnIndexOrThrow("error_rate")),
-                    errorParse = it.getInt(it.getColumnIndexOrThrow("error_parse"))
+                    errorParse = it.getInt(it.getColumnIndexOrThrow("error_parse")),
+                    challengeSuccess = it.getInt(it.getColumnIndexOrThrow("challenge_success")),
+                    challengeFailure = it.getInt(it.getColumnIndexOrThrow("challenge_failure"))
                 ))
             }
         }
@@ -98,7 +105,9 @@ class StatsRepository(private val database: StatsDatabase) {
                     errorCount = it.getLong(it.getColumnIndexOrThrow("error_count")),
                     totalBytes = it.getLong(it.getColumnIndexOrThrow("total_bytes")),
                     avgDurationMs = it.getLong(it.getColumnIndexOrThrow("avg_duration_ms")),
-                    maxDurationMs = it.getLong(it.getColumnIndexOrThrow("max_duration_ms"))
+                    maxDurationMs = it.getLong(it.getColumnIndexOrThrow("max_duration_ms")),
+                    challengeSuccess = it.getInt(it.getColumnIndexOrThrow("challenge_success")),
+                    challengeFailure = it.getInt(it.getColumnIndexOrThrow("challenge_failure"))
                 ))
             }
         }
@@ -132,7 +141,9 @@ class StatsRepository(private val database: StatsDatabase) {
                     errorQueue = it.getInt(it.getColumnIndexOrThrow("error_queue")),
                     errorAuth = it.getInt(it.getColumnIndexOrThrow("error_auth")),
                     errorRate = it.getInt(it.getColumnIndexOrThrow("error_rate")),
-                    errorParse = it.getInt(it.getColumnIndexOrThrow("error_parse"))
+                    errorParse = it.getInt(it.getColumnIndexOrThrow("error_parse")),
+                    challengeSuccess = it.getInt(it.getColumnIndexOrThrow("challenge_success")),
+                    challengeFailure = it.getInt(it.getColumnIndexOrThrow("challenge_failure"))
                 )
             }
         }
@@ -159,7 +170,9 @@ class StatsRepository(private val database: StatsDatabase) {
                     errorCount = it.getLong(it.getColumnIndexOrThrow("error_count")),
                     totalBytes = it.getLong(it.getColumnIndexOrThrow("total_bytes")),
                     avgDurationMs = it.getLong(it.getColumnIndexOrThrow("avg_duration_ms")),
-                    maxDurationMs = it.getLong(it.getColumnIndexOrThrow("max_duration_ms"))
+                    maxDurationMs = it.getLong(it.getColumnIndexOrThrow("max_duration_ms")),
+                    challengeSuccess = it.getInt(it.getColumnIndexOrThrow("challenge_success")),
+                    challengeFailure = it.getInt(it.getColumnIndexOrThrow("challenge_failure"))
                 )
             }
         }

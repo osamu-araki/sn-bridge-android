@@ -1,5 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-03-14
+// Version: 1.1.0 | Updated: 2026-04-12
 // [2026-03-14] サーバータブ + 統計タブを統合したダッシュボード
+// [2026-04-12] チャレンジ統計（成功/失敗回数）を今日/今月サマリーに追加
 package jp.salesnow.chromebridge.ui
 
 import androidx.compose.foundation.background
@@ -148,7 +149,9 @@ fun DashboardTab(
                     totalRequests = todayStats?.totalRequests ?: 0,
                     successRate = todayStats?.successRate ?: 0.0,
                     avgDuration = todayStats?.avgDurationMs ?: 0,
-                    totalBytes = todayStats?.totalBytes ?: 0
+                    totalBytes = todayStats?.totalBytes ?: 0,
+                    challengeSuccess = todayStats?.challengeSuccess ?: 0,
+                    challengeFailure = todayStats?.challengeFailure ?: 0
                 )
                 SummaryCard(
                     modifier = Modifier.weight(1f),
@@ -156,7 +159,9 @@ fun DashboardTab(
                     totalRequests = currentMonthStats?.totalRequests ?: 0,
                     successRate = currentMonthStats?.successRate ?: 0.0,
                     avgDuration = currentMonthStats?.avgDurationMs ?: 0,
-                    totalBytes = currentMonthStats?.totalBytes ?: 0
+                    totalBytes = currentMonthStats?.totalBytes ?: 0,
+                    challengeSuccess = currentMonthStats?.challengeSuccess ?: 0,
+                    challengeFailure = currentMonthStats?.challengeFailure ?: 0
                 )
             }
         }
@@ -249,8 +254,12 @@ private fun SummaryCard(
     totalRequests: Long,
     successRate: Double,
     avgDuration: Long,
-    totalBytes: Long
+    totalBytes: Long,
+    challengeSuccess: Int = 0,
+    challengeFailure: Int = 0
 ) {
+    val challengeTotal = challengeSuccess + challengeFailure
+
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
@@ -305,6 +314,36 @@ private fun SummaryCard(
                 fontSize = 11.sp,
                 color = GrayLight
             )
+
+            // [2026-04-12] チャレンジ統計（常時表示）
+            Spacer(Modifier.height(6.dp))
+            Divider(color = GrayLight.copy(alpha = 0.3f))
+            Spacer(Modifier.height(6.dp))
+            Text("認証チャレンジ", fontSize = 10.sp, color = GrayLight)
+            Spacer(Modifier.height(2.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "$challengeSuccess",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (challengeSuccess > 0) Teal else GrayLight
+                    )
+                    Text("成功", fontSize = 10.sp, color = GrayLight)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "$challengeFailure",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (challengeFailure > 0) ErrorRed else GrayLight
+                    )
+                    Text("失敗", fontSize = 10.sp, color = GrayLight)
+                }
+            }
         }
     }
 }

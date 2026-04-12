@@ -1,7 +1,8 @@
-// Version: 1.2.0 | Updated: 2026-03-13
+// Version: 1.3.0 | Updated: 2026-04-11
 // [2026-03-13] Cloudflare チャレンジ検知時に WebView を画面表示するための管理シングルトン
 // [2026-03-13] フルスクリーンインテント対応: バックグラウンドでも通知経由で確実に画面表示
 // [2026-03-13] Slack Incoming Webhook 通知対応
+// [2026-04-11] SYSTEM_ALERT_WINDOW 権限があれば通知をスキップして直接 Activity 起動
 package jp.salesnow.chromebridge.fetcher
 
 import android.app.NotificationChannel
@@ -85,6 +86,21 @@ object ChallengeManager {
                     android.util.Log.w("ChromeBridge", "Slack 通知に失敗: ${e.message}")
                 }
             }.start()
+        }
+
+        // [2026-04-11] SYSTEM_ALERT_WINDOW 権限があれば通知をスキップして直接起動
+        // オーバーレイ権限は Android のバックグラウンド Activity 起動制限を公式に
+        // 回避できる唯一の方法（フォアグラウンドサービス単体では Android 12+ で不可）
+        if (android.provider.Settings.canDrawOverlays(context)) {
+            val intent = Intent(context, Class.forName("jp.salesnow.chromebridge.ChallengeActivity"))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            try {
+                context.startActivity(intent)
+                return
+            } catch (e: Exception) {
+                android.util.Log.w("ChromeBridge", "オーバーレイ経由の直接起動に失敗、通知にフォールバック: ${e.message}")
+                // fall through
+            }
         }
 
         val useNotify = SettingsRepository(context).challengeNotify

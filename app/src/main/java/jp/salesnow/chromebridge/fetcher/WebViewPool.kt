@@ -1,8 +1,9 @@
-// Version: 1.6.0 | Updated: 2026-03-14
+// Version: 1.7.0 | Updated: 2026-04-12
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
 // [2026-03-13] メインスレッドデッドロック修正、SSL エラーハンドリング追加
 // [2026-03-13] Cookie 永続化: CookieManager でディスク保存、reCAPTCHA 対策
 // [2026-03-13] チャレンジ検知: Cloudflare 等の認証ページを検知し手動解除画面を表示
+// [2026-04-12] チャレンジログ強化: ドメイン・所要時間・成否を記録
 package jp.salesnow.chromebridge.fetcher
 
 import android.annotation.SuppressLint
@@ -31,7 +32,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class WebViewPool(
     private val context: Context,
     private val poolSize: Int,
-    private val onLog: (String) -> Unit = {}
+    private val onLog: (String) -> Unit = {},
+    // [2026-04-12] チャレンジ統計記録コールバック (success: Boolean)
+    private val onChallengeResult: (Boolean) -> Unit = {}
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val semaphore = Semaphore(poolSize)
@@ -145,6 +148,11 @@ class WebViewPool(
         var pageError: String? = null
         val challengeDetected = AtomicBoolean(false)
         val challengeShown = AtomicBoolean(false)
+        // [2026-04-12] チャレンジ計測用
+        var challengeStartMs = 0L
+        val challengeDomain = try {
+            java.net.URI(request.url).host ?: request.url
+        } catch (_: Exception) { request.url }
 
         mainHandler.post {
             wv.webViewClient = object : WebViewClient() {
@@ -163,8 +171,8 @@ class WebViewPool(
                             // チャレンジページ検知 → ユーザーに画面を表示
                             challengeDetected.set(true)
                             if (!challengeShown.getAndSet(true)) {
-                                android.util.Log.d("ChromeBridge", "チャレンジ検知: $title (worker=$workerId)")
-                                onLog("チャレンジ検知: $title (worker=$workerId)")
+                                challengeStartMs = System.currentTimeMillis()
+                                onLog("チャレンジ検知: domain=$challengeDomain title=\"$title\" (worker=$workerId)")
                                 ChallengeManager.show(context, wv)
                             }
                             // latch は countDown しない → ユーザーの操作を待つ
@@ -173,8 +181,9 @@ class WebViewPool(
                             extracted = true
                             // チャレンジ画面が出ていたら閉じる
                             if (challengeShown.get()) {
-                                android.util.Log.d("ChromeBridge", "チャレンジ解除: $title (worker=$workerId)")
-                                onLog("チャレンジ解除: $title (worker=$workerId)")
+                                val elapsed = System.currentTimeMillis() - challengeStartMs
+                                onLog("チャレンジ成功: domain=$challengeDomain ${elapsed}ms (worker=$workerId)")
+                                onChallengeResult(true)
                                 mainHandler.post { ChallengeManager.dismiss() }
                             }
                             mainHandler.postDelayed({
@@ -215,8 +224,7 @@ class WebViewPool(
 
         // チャレンジが検知されていた場合、追加で待機（ユーザーの手動操作時間）
         if (!completed && challengeDetected.get()) {
-            android.util.Log.d("ChromeBridge", "チャレンジ待機中... 追加 ${challengeExtraTimeout}秒 (worker=$workerId)")
-            onLog("チャレンジ待機中... 追加 ${challengeExtraTimeout}秒 (worker=$workerId)")
+            onLog("チャレンジ待機中: domain=$challengeDomain 追加${challengeExtraTimeout}秒 (worker=$workerId)")
             completed = latch.await(challengeExtraTimeout, TimeUnit.SECONDS)
         }
 
@@ -227,7 +235,9 @@ class WebViewPool(
                 if (challengeShown.get()) ChallengeManager.dismiss()
             }
             val msg = if (challengeDetected.get()) {
-                "認証タイムアウト（${challengeExtraTimeout}秒）(worker=$workerId)".also { onLog(it) }
+                val elapsed = System.currentTimeMillis() - challengeStartMs
+                onChallengeResult(false)
+                "チャレンジ失敗（タイムアウト）: domain=$challengeDomain ${elapsed}ms (worker=$workerId)".also { onLog(it) }
             } else {
                 "${request.timeout}秒でタイムアウトしました (worker=$workerId)"
             }
