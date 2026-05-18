@@ -1,4 +1,4 @@
-// Version: 1.5.0 | Updated: 2026-03-12
+// Version: 1.7.0 | Updated: 2026-05-18
 // [2026-03-08] server/index.js (Express + ws) を NanoHTTPd で再実装
 // API 仕様は完全互換: POST /fetch, GET /status
 // [2026-03-08] Status import 修正、TOO_MANY_REQUESTS を INTERNAL_ERROR に置換
@@ -6,6 +6,9 @@
 // [2026-03-11] 直列キュー → Semaphore ベース並列処理、タイムアウトクランプ
 // [2026-03-11] GET /stats エンドポイント追加
 // [2026-03-12] レートリミッタ・キュー上限チェック削除（Semaphore + TCP バックログに委譲）
+// [2026-05-18] スレッドプールを有界キュー化、過負荷時に 503 を返す過負荷防御を追加
+// [2026-05-18] 500 排除: 一時障害は 503+Retry-After、URL個別失敗は 200+ok:false に整理。
+//   全エラー応答に retryable / category フィールドを付与。/status に累計メトリクス追加。
 package jp.salesnow.chromebridge.server
 
 import com.google.gson.Gson
@@ -17,10 +20,10 @@ import jp.salesnow.chromebridge.data.StatsCollector
 import jp.salesnow.chromebridge.data.StatsRepository
 import jp.salesnow.chromebridge.fetcher.FetchRequest
 import jp.salesnow.chromebridge.fetcher.WebViewPool
-import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class BridgeHttpServer(
     port: Int,
@@ -37,6 +40,18 @@ class BridgeHttpServer(
     private val startTime = System.currentTimeMillis()
     private val pendingCount = AtomicInteger(0)
 
+    // [2026-05-18] 起動来の累計メトリクス（/status で公開）
+    private val metricRequests = AtomicLong(0)   // fetch を実行したリクエスト数
+    private val metricErrors = AtomicLong(0)     // 失敗したリクエスト数
+    private val metricTimeouts = AtomicLong(0)   // タイムアウトしたリクエスト数
+    private val metricElapsedMs = AtomicLong(0)  // 処理時間の累計（平均算出用）
+
+    // [2026-05-18] NanoHTTPD 2.3.1 の Status enum に 503 が無いためカスタム定義
+    private val statusServiceUnavailable = object : NanoHTTPD.Response.IStatus {
+        override fun getRequestStatus(): Int = 503
+        override fun getDescription(): String = "503 Service Unavailable"
+    }
+
     // [2026-03-12] スレッドプール制限: 無制限スレッド生成を防止
     // コアプール=pool数、最大=pool数×8（待機リクエスト含む）、60秒アイドルで縮小
     init {
@@ -45,15 +60,26 @@ class BridgeHttpServer(
     }
 
     override fun serve(session: IHTTPSession): Response {
-        val uri = session.uri
-        val method = session.method
-
-        return when {
-            method == Method.POST && uri == "/fetch" -> handleFetch(session)
-            method == Method.GET && uri == "/status" -> handleStatus()
-            // [2026-03-11] 統計 API エンドポイント
-            method == Method.GET && uri == "/stats" -> handleStats(session)
-            else -> jsonResponse(Status.NOT_FOUND, mapOf("ok" to false, "error" to "not_found"))
+        // [2026-05-18] 想定外例外を NanoHTTPd デフォルトの 500 に落とさず 503 JSON で返す
+        return try {
+            val uri = session.uri
+            val method = session.method
+            when {
+                method == Method.POST && uri == "/fetch" -> handleFetch(session)
+                method == Method.GET && uri == "/status" -> handleStatus()
+                // [2026-03-11] 統計 API エンドポイント
+                method == Method.GET && uri == "/stats" -> handleStats(session)
+                else -> errorResponse(
+                    Status.NOT_FOUND, "not_found",
+                    "エンドポイントが見つかりません", retryable = false, category = "client"
+                )
+            }
+        } catch (e: Exception) {
+            onLog("未捕捉例外: ${e.message}")
+            errorResponse(
+                statusServiceUnavailable, "internal_error",
+                "サーバー内部エラー: ${e.message}", retryable = true, category = "bridge"
+            )
         }
     }
 
@@ -70,46 +96,73 @@ class BridgeHttpServer(
                 url = "", success = false, errorCode = errorCode, durationMs = 0, responseBytes = 0
             ))
             val status = if (authResult.code == 401) Status.UNAUTHORIZED else Status.FORBIDDEN
-            return jsonResponse(status, mapOf(
-                "ok" to false, "error" to errorCode,
-                "message" to authResult.message
-            ))
+            return errorResponse(status, errorCode, authResult.message, retryable = false, category = "client")
         }
 
         // [2026-03-12] レートリミッタ削除: API Key 認証 + Semaphore バックプレッシャーで制御
         // NanoHTTPd スレッド/リクエスト → Semaphore ブロック → WebView 空き次第処理
+
+        // [2026-05-18] 過負荷防御: 処理中リクエストが上限を超えていたら即 503 を返す
+        val concurrentLimit = maxOf(pool.currentSize * 8, 32)
+        if (pendingCount.get() >= concurrentLimit) {
+            onLog("過負荷により 503 を返却 (pending=${pendingCount.get()}, limit=$concurrentLimit)")
+            statsCollector?.record(RequestMetrics(
+                url = "", success = false, errorCode = "server_busy", durationMs = 0, responseBytes = 0
+            ))
+            return errorResponse(
+                statusServiceUnavailable, "server_busy",
+                "サーバーが過負荷状態です。時間をおいて再試行してください",
+                retryable = true, category = "bridge"
+            )
+        }
 
         // リクエストボディ解析
         val body = readBody(session)
         val json = try {
             JsonParser.parseString(body).asJsonObject
         } catch (e: Exception) {
-            return jsonResponse(Status.BAD_REQUEST, mapOf(
-                "ok" to false, "error" to "bad_request", "message" to "JSON パースエラー"
-            ))
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request", "JSON パースエラー",
+                retryable = false, category = "client"
+            )
         }
 
-        val url = json.get("url")?.asString
+        // [2026-05-18] フィールドの型不正（asString/asInt の例外）も bad_request 扱いにする。
+        // 例: {"url":{}} や {"wait":"abc"} は型不正で例外を投げるため、ここで捕捉して 400 を返す。
+        val url: String?
+        val mode: String?
+        val requestedWait: Int
+        val maxLength: Int
+        val requestedTimeout: Int
+        try {
+            url = json.get("url")?.asString
+            mode = json.get("mode")?.asString
+            requestedWait = json.get("wait")?.asInt ?: 3
+            maxLength = json.get("max_length")?.asInt ?: 50000
+            requestedTimeout = json.get("timeout")?.asInt ?: 30
+        } catch (e: Exception) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "リクエストパラメータの型が不正です: ${e.message}",
+                retryable = false, category = "client"
+            )
+        }
+
         if (url.isNullOrBlank()) {
-            return jsonResponse(Status.BAD_REQUEST, mapOf(
-                "ok" to false, "error" to "bad_request", "message" to "url は必須です"
-            ))
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request", "url は必須です",
+                retryable = false, category = "client"
+            )
         }
 
-        val mode = json.get("mode")?.asString
         if (mode != null && mode != "text" && mode != "dom") {
-            return jsonResponse(Status.BAD_REQUEST, mapOf(
-                "ok" to false, "error" to "bad_request",
-                "message" to "mode は \"text\" または \"dom\" を指定してください"
-            ))
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "mode は \"text\" または \"dom\" を指定してください",
+                retryable = false, category = "client"
+            )
         }
 
-        // [2026-03-12] キュー上限チェック削除: TCP バックログ + Semaphore に委譲
-        // pendingCount は監視用に維持（/status エンドポイントで参照）
-
-        val requestedWait = json.get("wait")?.asInt ?: 3
-        val maxLength = json.get("max_length")?.asInt ?: 50000
-        val requestedTimeout = json.get("timeout")?.asInt ?: 30
         val fetchMode = mode ?: "text"
 
         // [2026-03-11] タイムアウト・wait のクランプ（サーバー側上限を超えないよう制限）
@@ -122,10 +175,13 @@ class BridgeHttpServer(
         onLog("リクエスト受信: $url (timeout=${effectiveTimeout}s, wait=${effectiveWait}s, pool=${pool.availableCount}/${pool.currentSize})")
 
         pendingCount.incrementAndGet()
+        metricRequests.incrementAndGet()
 
         // [2026-03-11] WebViewPool が並行数を Semaphore で制御するため、直接 fetch を呼ぶ
         // NanoHTTPd は各リクエストを独自スレッドで処理するので、ここでブロッキング OK
         statsCollector?.onProcessingStart()
+        // [2026-05-18] メトリクス会計は finally で一度だけ行う（二重加算防止）
+        var resultError: String? = null
         try {
             val request = FetchRequest(url, effectiveWait, maxLength, effectiveTimeout, fetchMode)
             val fetchResult = pool.fetch(request)
@@ -166,11 +222,20 @@ class BridgeHttpServer(
                 ))
                 return jsonResponse(Status.OK, resp)
             } else {
-                onLog("エラー: $url — ${fetchResult.error} (${elapsed}ms)")
+                // [2026-05-18] エラー種別を HTTP ステータスへマッピング（500 は使わない）
+                //   Bridge 自身の一時障害 → 503 + Retry-After（リトライ可）
+                //   対象 URL 個別の取得失敗 → 200 + ok:false（n8n が ok を見て個別判定）
+                val errCode = fetchResult.error ?: "unknown"
+                resultError = errCode
+                val (status, retryable, category) = classifyError(errCode)
+                onLog("エラー: $url — $errCode (${elapsed}ms, status=${status.requestStatus})")
+
                 val errorResp = mapOf<String, Any?>(
                     "ok" to false,
-                    "error" to (fetchResult.error ?: "unknown"),
-                    "message" to (fetchResult.message ?: "")
+                    "error" to errCode,
+                    "message" to (fetchResult.message ?: ""),
+                    "retryable" to retryable,
+                    "category" to category
                 )
                 val responseJson = gson.toJson(errorResp)
                 statsCollector?.record(RequestMetrics(
@@ -180,12 +245,22 @@ class BridgeHttpServer(
                     durationMs = elapsed,
                     responseBytes = responseJson.toByteArray().size.toLong()
                 ))
-                return jsonResponse(Status.INTERNAL_ERROR, errorResp)
+                val resp = jsonResponse(status, errorResp)
+                if (status.requestStatus == 503 && retryable) {
+                    resp.addHeader("Retry-After", retryAfterSeconds().toString())
+                }
+                return resp
             }
         } catch (e: Exception) {
+            resultError = "internal_error"
             val elapsed = System.currentTimeMillis() - startMs
-            val errorResp = mapOf(
-                "ok" to false, "error" to "internal_error", "message" to e.message
+            onLog("想定外エラー: $url — ${e.message} (${elapsed}ms)")
+            val errorResp = mapOf<String, Any?>(
+                "ok" to false,
+                "error" to "internal_error",
+                "message" to (e.message ?: "内部エラー"),
+                "retryable" to true,
+                "category" to "bridge"
             )
             statsCollector?.record(RequestMetrics(
                 url = url,
@@ -194,23 +269,72 @@ class BridgeHttpServer(
                 durationMs = elapsed,
                 responseBytes = gson.toJson(errorResp).toByteArray().size.toLong()
             ))
-            return jsonResponse(Status.INTERNAL_ERROR, errorResp)
+            val resp = jsonResponse(statusServiceUnavailable, errorResp)
+            resp.addHeader("Retry-After", retryAfterSeconds().toString())
+            return resp
         } finally {
             statsCollector?.onProcessingEnd()
             pendingCount.decrementAndGet()
+            // [2026-05-18] elapsed・error はここで一度だけ計上する（二重加算防止）
+            metricElapsedMs.addAndGet(System.currentTimeMillis() - startMs)
+            if (resultError != null) {
+                metricErrors.incrementAndGet()
+                if (resultError == "timeout") metricTimeouts.incrementAndGet()
+            }
+        }
+    }
+
+    /**
+     * [2026-05-18] error コードを (HTTPステータス, リトライ可否, カテゴリ) に分類する。
+     * 原則: Bridge 自身の一時障害は 503、対象 URL 個別の失敗は 200+ok:false。500 は使わない。
+     */
+    private fun classifyError(error: String): Triple<NanoHTTPD.Response.IStatus, Boolean, String> =
+        when (error) {
+            // Bridge 自身の一時的な過負荷・障害 → 503（リトライ可）
+            "pool_busy", "server_busy", "renderer_gone", "internal_error" ->
+                Triple(statusServiceUnavailable, true, "bridge")
+            // 対象 URL 個別の取得失敗 → 200 + ok:false（リトライ可、要判定）
+            "timeout", "fetch_failed" ->
+                Triple(Status.OK, true, "target")
+            // 対象ページの構造起因 → 200 + ok:false（同じ URL の再試行は非推奨）
+            "extract_failed", "parse_failed" ->
+                Triple(Status.OK, false, "target")
+            // 未知のエラーは Bridge 一時障害として扱う
+            else ->
+                Triple(statusServiceUnavailable, true, "bridge")
+        }
+
+    /**
+     * [2026-05-18] Retry-After に入れる秒数。処理中リクエスト数に応じて段階的に伸ばす。
+     */
+    private fun retryAfterSeconds(): Int {
+        val n = pendingCount.get()
+        return when {
+            n <= 4 -> 2
+            n <= 16 -> 5
+            else -> 10
         }
     }
 
     private fun handleStatus(): Response {
         val uptimeSeconds = (System.currentTimeMillis() - startTime) / 1000
+        val reqs = metricRequests.get()
+        val avgElapsed = if (reqs > 0) metricElapsedMs.get() / reqs else 0L
         return jsonResponse(Status.OK, mapOf(
             "webview_ready" to true,
             "pending_requests" to pendingCount.get(),
+            // [2026-05-18] queue_depth は pending_requests と同義（処理中＋プール待ち）
+            "queue_depth" to pendingCount.get(),
             "pool_size" to pool.currentSize,
             "pool_available" to pool.availableCount,
             "max_timeout" to maxTimeout,
             "max_wait" to maxWait,
-            "uptime_seconds" to uptimeSeconds
+            "uptime_seconds" to uptimeSeconds,
+            // [2026-05-18] 起動来の累計メトリクス
+            "total_requests" to reqs,
+            "total_errors" to metricErrors.get(),
+            "total_timeouts" to metricTimeouts.get(),
+            "avg_elapsed_ms" to avgElapsed
         ))
     }
 
@@ -224,15 +348,14 @@ class BridgeHttpServer(
         if (authResult is AuthMiddleware.AuthResult.Error) {
             val errorCode = if (authResult.code == 401) "unauthorized" else "forbidden"
             val status = if (authResult.code == 401) Status.UNAUTHORIZED else Status.FORBIDDEN
-            return jsonResponse(status, mapOf(
-                "ok" to false, "error" to errorCode, "message" to authResult.message
-            ))
+            return errorResponse(status, errorCode, authResult.message, retryable = false, category = "client")
         }
 
         val repo = statsRepository
-            ?: return jsonResponse(Status.INTERNAL_ERROR, mapOf(
-                "ok" to false, "error" to "stats_unavailable", "message" to "統計機能が初期化されていません"
-            ))
+            ?: return errorResponse(
+                statusServiceUnavailable, "stats_unavailable",
+                "統計機能が初期化されていません", retryable = false, category = "bridge"
+            )
 
         val params = session.parms ?: emptyMap()
         val period = params["period"] ?: "daily"
@@ -260,15 +383,17 @@ class BridgeHttpServer(
                         "data" to data.map { mapMonthlyStats(it) }
                     ))
                 }
-                else -> jsonResponse(Status.BAD_REQUEST, mapOf(
-                    "ok" to false, "error" to "bad_request",
-                    "message" to "period は \"daily\" または \"monthly\" を指定してください"
-                ))
+                else -> errorResponse(
+                    Status.BAD_REQUEST, "bad_request",
+                    "period は \"daily\" または \"monthly\" を指定してください",
+                    retryable = false, category = "client"
+                )
             }
         } catch (e: Exception) {
-            jsonResponse(Status.INTERNAL_ERROR, mapOf(
-                "ok" to false, "error" to "internal_error", "message" to e.message
-            ))
+            errorResponse(
+                statusServiceUnavailable, "internal_error",
+                e.message ?: "統計取得エラー", retryable = true, category = "bridge"
+            )
         }
     }
 
@@ -317,9 +442,36 @@ class BridgeHttpServer(
         return String(buf, 0, offset)
     }
 
-    private fun jsonResponse(status: Status, data: Any): Response {
+    // [2026-05-18] Status enum とカスタム IStatus（503 等）の両方を受け付ける
+    private fun jsonResponse(status: NanoHTTPD.Response.IStatus, data: Any): Response {
         val json = gson.toJson(data)
         return newFixedLengthResponse(status, "application/json", json)
+    }
+
+    /**
+     * [2026-05-18] 構造化エラーレスポンスを生成する。
+     * 全エラー応答に retryable（再試行可否）と category（bridge/target/client）を付与する。
+     * リトライ可能な 503 には Retry-After ヘッダを付ける。
+     */
+    private fun errorResponse(
+        status: NanoHTTPD.Response.IStatus,
+        error: String,
+        message: String,
+        retryable: Boolean,
+        category: String
+    ): Response {
+        val body = mapOf(
+            "ok" to false,
+            "error" to error,
+            "message" to message,
+            "retryable" to retryable,
+            "category" to category
+        )
+        val resp = jsonResponse(status, body)
+        if (status.requestStatus == 503 && retryable) {
+            resp.addHeader("Retry-After", retryAfterSeconds().toString())
+        }
+        return resp
     }
 
     fun stopServer() {
@@ -329,21 +481,26 @@ class BridgeHttpServer(
 
 // [2026-03-12] スレッドプール付き AsyncRunner
 // NanoHTTPD デフォルトは無制限にスレッド生成するため、上限を設けてクラッシュを防止
+// [2026-05-18] 有界キュー化: 無制限キューだとリクエストが無限に積まれ OOM の恐れがある。
+//   ArrayBlockingQueue にすることでキュー満杯時にスレッドが maxThreads まで増え、
+//   それも飽和したら reject される。reject 時は接続を切断する
+//   （CallerRunsPolicy だと最大120秒の fetch を accept スレッドで実行し新規接続が全凍結するため不採用）。
 private class BoundRunner(
     maxThreads: Int,
     private val onLog: (String) -> Unit
 ) : NanoHTTPD.AsyncRunner {
-    private val executor = java.util.concurrent.LinkedBlockingQueue<Runnable>().let { queue ->
-        ThreadPoolExecutor(
-            4, maxThreads, 60L, TimeUnit.SECONDS, queue
-        ).apply {
-            rejectedExecutionHandler = ThreadPoolExecutor.CallerRunsPolicy()
-        }
+    private val executor = ThreadPoolExecutor(
+        4, maxThreads, 60L, TimeUnit.SECONDS,
+        java.util.concurrent.ArrayBlockingQueue(maxThreads)
+    ).apply {
+        rejectedExecutionHandler = ThreadPoolExecutor.AbortPolicy()
     }
     private val running = java.util.Collections.synchronizedList(mutableListOf<NanoHTTPD.ClientHandler>())
 
     override fun closeAll() {
-        running.toList().forEach { it.close() }
+        // [2026-05-18] synchronizedList の安全なスナップショット取得
+        val snapshot = synchronized(running) { running.toList() }
+        snapshot.forEach { it.close() }
         executor.shutdown()
     }
 
@@ -355,9 +512,15 @@ private class BoundRunner(
         running.add(clientHandler)
         try {
             executor.execute(clientHandler)
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // [2026-05-18] スレッドプール飽和 → 接続を切断（n8n 側はリトライで回復する）
+            running.remove(clientHandler)
+            onLog("過負荷によりリクエストをドロップ（スレッドプール飽和）")
+            try { clientHandler.close() } catch (_: Exception) {}
         } catch (e: Exception) {
             running.remove(clientHandler)
             onLog("スレッドプール実行エラー: ${e.message}")
+            try { clientHandler.close() } catch (_: Exception) {}
         }
     }
 }

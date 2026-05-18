@@ -73,6 +73,47 @@ curl -X POST https://<tunnel-domain>/fetch \
 }
 ```
 
+**エラーレスポンス:**
+
+エラー時は以下の形式で返す。`retryable` と `category` を見て再試行可否を判定できる。
+
+```json
+{
+  "ok": false,
+  "error": "pool_busy",
+  "message": "WebView プールが空きません（5秒待機）",
+  "retryable": true,
+  "category": "bridge"
+}
+```
+
+| フィールド | 説明 |
+|-----------|------|
+| retryable | 再試行で回復しうるか（true: 再試行可 / false: 再試行不可） |
+| category | `bridge`（Bridge 自身の一時障害）/ `target`（対象 URL 個別の失敗）/ `client`（リクエスト不正） |
+
+**ステータスコードとエラー種別:**
+
+原則として **HTTP 500 は返さない**。一時障害は 503、対象 URL 個別の失敗は 200 + `ok:false`、
+クライアント起因は 4xx で返す。
+
+| error | HTTP | retryable | category | 説明 |
+|-------|------|-----------|----------|------|
+| server_busy | 503 | true | bridge | 処理中リクエストが上限超過（過負荷） |
+| pool_busy | 503 | true | bridge | WebView プールが枯渇 |
+| renderer_gone | 503 | true | bridge | WebView レンダラが異常終了（自動復旧する） |
+| internal_error | 503 | true | bridge | 想定外の内部エラー |
+| timeout | 200 | true | target | ページ取得がタイムアウト |
+| fetch_failed | 200 | true | target | WebView のページ読み込みエラー |
+| extract_failed | 200 | false | target | ページからのテキスト/DOM 抽出に失敗 |
+| parse_failed | 200 | false | target | 抽出結果のパースに失敗 |
+| bad_request | 400 | false | client | url 未指定・JSON 不正など |
+| unauthorized / forbidden | 401 / 403 | false | client | API キー認証エラー |
+
+- **503** には `Retry-After`（秒）ヘッダが付与される。クライアントはこの間隔を空けて再試行する。
+- **200 + `ok:false`** は「Bridge は正常だが対象 URL の取得に失敗した」ことを意味する。
+  クライアントは HTTP ステータスだけでなく必ずレスポンスボディの `ok` を確認すること。
+
 ### `GET /status`
 
 サーバーの状態を返す。
@@ -81,9 +122,25 @@ curl -X POST https://<tunnel-domain>/fetch \
 {
   "webview_ready": true,
   "pending_requests": 0,
-  "uptime_seconds": 3593
+  "queue_depth": 0,
+  "pool_size": 4,
+  "pool_available": 4,
+  "max_timeout": 60,
+  "max_wait": 10,
+  "uptime_seconds": 3593,
+  "total_requests": 1284,
+  "total_errors": 17,
+  "total_timeouts": 9,
+  "avg_elapsed_ms": 4231
 }
 ```
+
+| フィールド | 説明 |
+|-----------|------|
+| pending_requests / queue_depth | 処理中＋プール待ちのリクエスト数 |
+| pool_size / pool_available | WebView プールの総数 / 空き数 |
+| total_requests / total_errors / total_timeouts | 起動来の累計（fetch を実行した回数・失敗数・タイムアウト数。認証エラーや bad_request、過負荷拒否は含まない） |
+| avg_elapsed_ms | fetch を実行したリクエストの平均処理時間（ミリ秒、起動来） |
 
 ## セットアップ手順
 
