@@ -1,11 +1,16 @@
-// Version: 1.6.0 | Updated: 2026-04-11
+// Version: 1.7.0 | Updated: 2026-05-20
 // [2026-03-11] 全設定を1画面にまとめた設定タブ
 // [2026-03-13] チャレンジ認証のバックグラウンド通知トグル追加
 // [2026-04-11] オーバーレイ権限（タップ不要起動）の状態表示と付与ボタン追加
+// [2026-05-20] 省電力対策セクション（バッテリー最適化除外 + OEM 自動起動誘導）を追加
 package jp.salesnow.chromebridge.ui
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -173,6 +178,85 @@ fun SettingsTab(
                         colors = ButtonDefaults.buttonColors(containerColor = Teal)
                     ) {
                         Text("Tunnel 設定を保存")
+                    }
+                }
+            }
+        }
+
+        // [2026-05-20] 省電力対策（OS / OEM の省電力でアプリが停止される問題への対策）
+        item {
+            val ctx = LocalContext.current
+            val lcOwner = LocalLifecycleOwner.current
+            var batteryOptIgnored by remember { mutableStateOf(isBatteryOptimizationIgnored(ctx)) }
+            DisposableEffect(lcOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
+                        batteryOptIgnored = isBatteryOptimizationIgnored(ctx)
+                    }
+                }
+                lcOwner.lifecycle.addObserver(observer)
+                onDispose { lcOwner.lifecycle.removeObserver(observer) }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "省電力対策",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "長時間稼働させるため、OS とメーカー独自の省電力機構を解除します",
+                        fontSize = 11.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    // バッテリー最適化除外（Android 標準）
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("バッテリー最適化除外", fontSize = 14.sp, color = NavyDark)
+                            Text(
+                                if (batteryOptIgnored) "有効（除外済み）"
+                                else "未設定（OS に停止されやすい状態）",
+                                fontSize = 11.sp,
+                                color = if (batteryOptIgnored) Teal else GrayLight
+                            )
+                        }
+                        if (!batteryOptIgnored) {
+                            OutlinedButton(onClick = { requestBatteryOptimizationExemption(ctx) }) {
+                                Text("除外設定")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    Divider()
+                    Spacer(Modifier.height(12.dp))
+
+                    // OEM 別の自動起動許可（OPPO/Xiaomi/Huawei 等は標準だけでは不十分）
+                    Text("メーカー独自の自動起動許可", fontSize = 14.sp, color = NavyDark)
+                    Text(
+                        "OPPO / Xiaomi / Huawei / Vivo 等は標準のバッテリー最適化除外だけでは不十分です。" +
+                            "各メーカーの「自動起動管理」を必ず許可してください。",
+                        fontSize = 11.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { openOemAutoStartSettings(ctx) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("自動起動設定を開く（${android.os.Build.MANUFACTURER}）")
                     }
                 }
             }
@@ -561,4 +645,107 @@ fun SettingsTab(
             }
         )
     }
+}
+
+// [2026-05-20] バッテリー最適化除外状態の取得
+private fun isBatteryOptimizationIgnored(context: Context): Boolean {
+    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+// [2026-05-20] バッテリー最適化除外を要求するシステムダイアログを開く
+private fun requestBatteryOptimizationExemption(context: Context) {
+    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+        data = Uri.parse("package:${context.packageName}")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        // フォールバック: 全アプリの最適化リスト
+        try {
+            val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(fallback)
+        } catch (_: Exception) {}
+    }
+}
+
+/**
+ * [2026-05-20] メーカー独自の自動起動管理画面を開く。
+ * OPPO / Xiaomi / Huawei / Vivo 等は標準のバッテリー最適化除外だけでは不十分で、
+ * 各メーカー専用の「自動起動許可」画面で追加許可が必要。
+ * 候補 Activity を順に試し、いずれも失敗したらアプリ情報画面にフォールバックする。
+ */
+private fun openOemAutoStartSettings(context: Context) {
+    val manufacturer = android.os.Build.MANUFACTURER.lowercase()
+    val attempts: List<ComponentName> = when (manufacturer) {
+        "xiaomi", "redmi", "poco" -> listOf(
+            ComponentName(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity"
+            )
+        )
+        "oppo", "realme" -> listOf(
+            ComponentName(
+                "com.coloros.safecenter",
+                "com.coloros.safecenter.permission.startup.StartupAppListActivity"
+            ),
+            ComponentName(
+                "com.coloros.safecenter",
+                "com.coloros.safecenter.startupapp.StartupAppListActivity"
+            ),
+            ComponentName(
+                "com.oppo.safe",
+                "com.oppo.safe.permission.startup.StartupAppListActivity"
+            )
+        )
+        "huawei", "honor" -> listOf(
+            ComponentName(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
+            ),
+            ComponentName(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.optimize.process.ProtectActivity"
+            )
+        )
+        "vivo", "iqoo" -> listOf(
+            ComponentName(
+                "com.iqoo.secure",
+                "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"
+            ),
+            ComponentName(
+                "com.vivo.permissionmanager",
+                "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
+            )
+        )
+        "samsung" -> listOf(
+            ComponentName(
+                "com.samsung.android.lool",
+                "com.samsung.android.sm.ui.battery.BatteryActivity"
+            )
+        )
+        else -> emptyList()
+    }
+
+    for (cn in attempts) {
+        val intent = Intent().apply {
+            component = cn
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) { /* 次の候補を試行 */ }
+    }
+
+    // フォールバック: アプリ情報画面（ユーザーが自力でナビゲートできる起点）
+    try {
+        val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(fallback)
+    } catch (_: Exception) {}
 }
