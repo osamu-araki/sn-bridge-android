@@ -237,10 +237,32 @@ class StatsCollector(private val database: StatsDatabase) {
     }
 
     /**
-     * リソース解放
+     * 同期的に flush を完了させてから handler thread を停止する。
+     * [2026-06-10] Codex#5: 旧 destroy() は flushNow() を非同期 post しただけで
+     *   呼び出し元が直後に DB close すると、close 済み DB に書き込みが走ってクラッシュ。
+     *   ここで CountDownLatch で完了を待つことで、Service の停止順序を堅牢にする。
      */
-    fun destroy() {
-        flushNow()
+    fun destroy(timeoutMs: Long = 5_000L) {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val posted = handler.post {
+            try { flush() } catch (e: Exception) {
+                android.util.Log.w("ChromeBridge", "StatsCollector.destroy 中の flush で例外: ${e.message}")
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (posted) {
+            try {
+                if (!latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    android.util.Log.w("ChromeBridge", "StatsCollector.destroy: flush 完了待ちタイムアウト")
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         handlerThread.quitSafely()
+        try { handlerThread.join(1_000L) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 }

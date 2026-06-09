@@ -230,7 +230,8 @@ class WebViewPool(
                                 val elapsed = System.currentTimeMillis() - challengeStartMs
                                 onLog("チャレンジ成功: domain=$challengeDomain ${elapsed}ms (worker=$workerId)")
                                 onChallengeResult(true)
-                                mainHandler.post { ChallengeManager.dismiss() }
+                                // [2026-06-10] Codex#4: 自分の WebView を明示指定して dismiss
+                                mainHandler.post { ChallengeManager.dismiss(wv) }
                             }
                             mainHandler.postDelayed({
                                 // [2026-05-18] fetch が既に確定していたら古い WebView を触らない
@@ -275,7 +276,7 @@ class WebViewPool(
                     val crashed = detail?.didCrash() == true
                     pageError = "WebView レンダラ異常終了 (worker=$workerId, crashed=$crashed)"
                     onLog(pageError!!)
-                    if (challengeShown.get()) mainHandler.post { ChallengeManager.dismiss() }
+                    if (challengeShown.get()) mainHandler.post { ChallengeManager.dismiss(wv) }
                     latch.countDown()
                     return true
                 }
@@ -307,7 +308,8 @@ class WebViewPool(
         if (!completed) {
             mainHandler.post {
                 wv.stopLoading()
-                if (challengeShown.get()) ChallengeManager.dismiss()
+                // [2026-06-10] Codex#4: 自分の WebView を明示指定して dismiss
+                if (challengeShown.get()) ChallengeManager.dismiss(wv)
             }
             val msg = if (challengeDetected.get()) {
                 val elapsed = System.currentTimeMillis() - challengeStartMs

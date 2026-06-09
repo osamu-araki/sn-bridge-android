@@ -52,6 +52,19 @@ class BridgeHttpServer(
         override fun getDescription(): String = "503 Service Unavailable"
     }
 
+    // [2026-06-10] Codex#3: Payload Too Large（413）も Status enum 未収録のためカスタム定義
+    private val statusPayloadTooLarge = object : NanoHTTPD.Response.IStatus {
+        override fun getRequestStatus(): Int = 413
+        override fun getDescription(): String = "413 Payload Too Large"
+    }
+
+    companion object {
+        // [2026-06-10] Codex#3: バリデーション・上限定数
+        const val MAX_REQUEST_BODY_BYTES = 256 * 1024  // 256 KB
+        const val MAX_MAX_LENGTH = 5 * 1024 * 1024     // 5 MB（text 取得の最大）
+        const val MAX_TIMEOUT_HARD_LIMIT = 300         // 5 分（maxTimeout 設定の上限ガード）
+    }
+
     // [2026-03-12] スレッドプール制限: 無制限スレッド生成を防止
     // コアプール=pool数、最大=pool数×8（待機リクエスト含む）、60秒アイドルで縮小
     init {
@@ -117,7 +130,16 @@ class BridgeHttpServer(
         }
 
         // リクエストボディ解析
-        val body = readBody(session)
+        val body = try {
+            readBody(session)
+        } catch (e: RequestTooLargeException) {
+            // [2026-06-10] Codex#3: Payload Too Large。413 を JSON で明示返却
+            return errorResponse(
+                statusPayloadTooLarge, "payload_too_large",
+                e.message ?: "リクエストボディが上限を超えています",
+                retryable = false, category = "client"
+            )
+        }
         val json = try {
             JsonParser.parseString(body).asJsonObject
         } catch (e: Exception) {
@@ -155,10 +177,53 @@ class BridgeHttpServer(
             )
         }
 
+        // [2026-06-10] Codex#2: SSRF 対策。scheme/host を allow list で検証する。
+        val urlDecision = UrlPolicy.check(url)
+        if (urlDecision is UrlPolicy.Decision.Deny) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                urlDecision.reason,
+                retryable = false, category = "client"
+            )
+        }
+
         if (mode != null && mode != "text" && mode != "dom") {
             return errorResponse(
                 Status.BAD_REQUEST, "bad_request",
                 "mode は \"text\" または \"dom\" を指定してください",
+                retryable = false, category = "client"
+            )
+        }
+
+        // [2026-06-10] Codex#3: 各パラメータの下限・上限バリデーション
+        // - wait: 0..maxWait（0 は許容、負値は拒否）
+        // - timeout: 1..maxTimeout（0/負値は即タイムアウトを誘発するので拒否）
+        // - max_length: 0..MAX_MAX_LENGTH（負値は substring 例外、巨大値は OOM 誘発）
+        if (requestedWait < 0) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "wait は 0 以上を指定してください",
+                retryable = false, category = "client"
+            )
+        }
+        if (requestedTimeout < 1) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "timeout は 1 以上を指定してください",
+                retryable = false, category = "client"
+            )
+        }
+        if (requestedTimeout > MAX_TIMEOUT_HARD_LIMIT) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "timeout は ${MAX_TIMEOUT_HARD_LIMIT} 以下を指定してください",
+                retryable = false, category = "client"
+            )
+        }
+        if (maxLength < 0 || maxLength > MAX_MAX_LENGTH) {
+            return errorResponse(
+                Status.BAD_REQUEST, "bad_request",
+                "max_length は 0..${MAX_MAX_LENGTH} の範囲で指定してください",
                 retryable = false, category = "client"
             )
         }
@@ -429,9 +494,16 @@ class BridgeHttpServer(
     )
 
     // [2026-03-11] InputStream.read() は1回で全バイト読めない場合があるためループで確実に読む
+    // [2026-06-10] Codex#3: Content-Length 上限を設けて OOM 攻撃を防止する。
+    //   超過時は例外で抜けて handleFetch の catch が internal_error(503) を返す。
     private fun readBody(session: IHTTPSession): String {
         val contentLength = session.headers["content-length"]?.toIntOrNull() ?: 0
         if (contentLength <= 0) return "{}"
+        if (contentLength > MAX_REQUEST_BODY_BYTES) {
+            throw RequestTooLargeException(
+                "リクエストボディが上限を超えています ($contentLength > $MAX_REQUEST_BODY_BYTES bytes)"
+            )
+        }
         val buf = ByteArray(contentLength)
         var offset = 0
         while (offset < contentLength) {
@@ -441,6 +513,8 @@ class BridgeHttpServer(
         }
         return String(buf, 0, offset)
     }
+
+    private class RequestTooLargeException(message: String) : RuntimeException(message)
 
     // [2026-05-18] Status enum とカスタム IStatus（503 等）の両方を受け付ける
     private fun jsonResponse(status: NanoHTTPD.Response.IStatus, data: Any): Response {

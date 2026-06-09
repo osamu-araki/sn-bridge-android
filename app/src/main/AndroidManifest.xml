@@ -40,10 +40,12 @@
         </activity>
 
         <!-- [2026-03-13] Cloudflare チャレンジ手動認証画面 -->
+        <!-- [2026-06-10] Codex 3 回目: launchMode=singleTop で複数 instance 起動を防止 -->
         <activity
             android:name=".ChallengeActivity"
             android:exported="false"
             android:theme="@style/Theme.ChromeBridge"
+            android:launchMode="singleTop"
             android:showOnLockScreen="true"
             android:turnScreenOn="true" />
 

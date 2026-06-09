@@ -312,7 +312,12 @@ class TunnelManager(
                     conn.connectTimeout = 10_000
                     conn.readTimeout = 10_000
                     conn.requestMethod = "GET"
-                    conn.setRequestProperty("Authorization", "Bearer salesnow")
+                    // [2026-06-10] Codex#1: 固定値 "Bearer salesnow" だと実 API Key が違う端末で
+                    // health check が 401 になり tunnel を flap させる。設定値から動的に取得する。
+                    val apiKey = SettingsRepository(context).apiKey
+                    if (apiKey.isNotBlank()) {
+                        conn.setRequestProperty("Authorization", "Bearer $apiKey")
+                    }
                     val code = conn.responseCode
                     conn.disconnect()
 
