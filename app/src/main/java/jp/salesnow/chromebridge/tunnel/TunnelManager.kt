@@ -23,6 +23,14 @@ class TunnelManager(
     private val context: Context,
     private val onLog: (String) -> Unit = {}
 ) {
+    companion object {
+        // [2026-06-10] Cloudflare 公式 edge IP（QUIC port 7844）。DNS lookup 不要にするための固定リスト。
+        //   将来的に IP 帯が変更された場合は SettingsRepository.cloudflaredEdgeIps で上書き可能。
+        const val DEFAULT_CLOUDFLARED_EDGE_IPS =
+            "198.41.192.27:7844,198.41.192.47:7844,198.41.192.67:7844," +
+                "198.41.200.13:7844,198.41.200.33:7844,198.41.200.43:7844"
+    }
+
     private var process: Process? = null
     private var logThread: Thread? = null
     private var dnsProxy: DnsProxy? = null
@@ -176,11 +184,16 @@ class TunnelManager(
             if (dnsProxy == null && !File("/etc/resolv.conf").exists()) {
                 if (SettingsRepository(context).verboseLog) onLog("DNS: /etc/resolv.conf が存在しないため DNS プロキシを起動します")
                 // [2026-03-14] DNS WRN は簡易ログモードでは非表示
+                // [2026-06-10] ただし port 53 bind 失敗（EACCES 等）は端末でのトラブルシュート上
+                //   重要なので「WRN」フィルタに関係なく必ず onLog に出す。
                 dnsProxy = DnsProxy(context) { msg ->
-                    if (msg.contains("WRN")) {
-                        if (SettingsRepository(context).verboseLog) onLog(msg)
-                    } else {
-                        onLog(msg)
+                    val isBindFailure = msg.contains("WRN") &&
+                        (msg.contains("Permission denied") || msg.contains("EACCES") ||
+                            msg.contains("bind") || msg.contains("Address already in use"))
+                    when {
+                        isBindFailure -> onLog(msg)
+                        msg.contains("WRN") -> if (SettingsRepository(context).verboseLog) onLog(msg)
+                        else -> onLog(msg)
                     }
                 }
                 dnsProxy?.start()
@@ -195,7 +208,17 @@ class TunnelManager(
             // --proxy-keepalive-connections: origin へのキープアライブ接続数
             // --proxy-keepalive-timeout: キープアライブ接続のタイムアウト
             // --grace-period: シャットダウン時の猶予期間
-            val pb = ProcessBuilder(
+            // [2026-06-10] DnsProxy が port 53 bind に失敗する OS（OPPO/Android 9 等）でも
+            //   cloudflared が起動できるよう、edge discovery (DNS lookup) を skip するため
+            //   公式 edge IP を直接指定する。1 個でも生存していれば接続成立する冗長指定。
+            //   公式 IP は Cloudflare 側で変更される可能性があるため、必要に応じて
+            //   SettingsRepository.cloudflaredEdgeIps から上書き可能にしている。
+            //   cloudflared CLI は --edge を「複数回」指定する仕様なので、IP ごとに 1 ペア。
+            val edgeIps = SettingsRepository(context).cloudflaredEdgeIps.ifBlank {
+                DEFAULT_CLOUDFLARED_EDGE_IPS
+            }.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+            val args = mutableListOf(
                 binary,
                 "tunnel",
                 "--no-autoupdate",
@@ -205,10 +228,14 @@ class TunnelManager(
                 "--proxy-keepalive-connections", "100",
                 "--proxy-keepalive-timeout", "120s",
                 "--grace-period", "30s",
+            )
+            edgeIps.forEach { ip -> args += listOf("--edge", ip) }
+            args += listOf(
                 "--config", configFile.absolutePath,
                 "run",
-                "--token", token
+                "--token", token,
             )
+            val pb = ProcessBuilder(args)
             pb.redirectErrorStream(true)
             pb.environment()["HOME"] = context.filesDir.absolutePath
 

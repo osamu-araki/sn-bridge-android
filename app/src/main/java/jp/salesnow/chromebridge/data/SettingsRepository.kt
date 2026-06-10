@@ -99,4 +99,11 @@ class SettingsRepository(context: Context) {
     var autoUpdateCheck: Boolean
         get() = prefs.getBoolean("auto_update_check", true)
         set(value) = prefs.edit { putBoolean("auto_update_check", value) }
+
+    // [2026-06-10] Tunnel: cloudflared --edge に渡すエッジ IP リスト（"IP:PORT,IP:PORT,..."）。
+    //   未指定なら TunnelManager.DEFAULT_CLOUDFLARED_EDGE_IPS に fallback。
+    //   将来 Cloudflare 側でエッジ帯が変更された際に、Portal などから上書き可能にするための窓口。
+    var cloudflaredEdgeIps: String
+        get() = prefs.getString("cloudflared_edge_ips", "") ?: ""
+        set(value) = prefs.edit { putString("cloudflared_edge_ips", value) }
 }
