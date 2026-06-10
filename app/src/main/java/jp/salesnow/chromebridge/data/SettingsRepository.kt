@@ -1,6 +1,7 @@
-// Version: 1.2.0 | Updated: 2026-03-11
+// Version: 1.3.0 | Updated: 2026-06-10
 // [2026-03-08] Tunnel トークン設定を追加
 // [2026-03-11] 並列処理・キュー・タイムアウト設定を追加
+// [2026-06-10] OTA アップデート設定（Portal manifest URL / トークン / 自動チェック）を追加
 package jp.salesnow.chromebridge.data
 
 import android.content.Context
@@ -77,4 +78,20 @@ class SettingsRepository(context: Context) {
     var logBackupUri: String
         get() = prefs.getString("log_backup_uri", "") ?: ""
         set(value) = prefs.edit { putString("log_backup_uri", value) }
+
+    // [2026-06-10] OTA: Portal manifest エンドポイント
+    //   例: https://portal.salesnow-cs.jp/api/bridge-app/manifest
+    var portalManifestUrl: String
+        get() = prefs.getString("portal_manifest_url", "") ?: ""
+        set(value) = prefs.edit { putString("portal_manifest_url", value) }
+
+    // [2026-06-10] OTA: manifest 認証用 Bearer トークン（Portal の system_settings に同じ値）
+    var portalCheckToken: String
+        get() = prefs.getString("portal_check_token", "") ?: ""
+        set(value) = prefs.edit { putString("portal_check_token", value) }
+
+    // [2026-06-10] OTA: 自動チェック ON/OFF（デフォルト ON、間隔は固定 1 時間）
+    var autoUpdateCheck: Boolean
+        get() = prefs.getBoolean("auto_update_check", true)
+        set(value) = prefs.edit { putBoolean("auto_update_check", value) }
 }

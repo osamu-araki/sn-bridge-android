@@ -66,7 +66,15 @@ fun SettingsTab(
     logAutoBackup: Boolean = false,
     onLogAutoBackupChange: (Boolean) -> Unit = {},
     logBackupFolderName: String = "",
-    onSelectBackupFolder: () -> Unit = {}
+    onSelectBackupFolder: () -> Unit = {},
+    // [2026-06-10] OTA: アップデート設定
+    portalManifestUrl: String = "",
+    portalCheckToken: String = "",
+    autoUpdateCheck: Boolean = true,
+    onSavePortalUpdateSettings: (url: String, token: String, auto: Boolean) -> Unit = { _, _, _ -> },
+    onManualUpdateCheck: () -> Unit = {},
+    currentVersionName: String = "",
+    currentVersionCode: Int = 0
 ) {
     var portInput by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKeyInput by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
@@ -78,6 +86,11 @@ fun SettingsTab(
     // [2026-03-14] Tunnel 設定
     var tunnelTokenInput by remember(savedTunnelToken) { mutableStateOf(savedTunnelToken) }
     var tunnelDomainInput by remember(savedTunnelDomain) { mutableStateOf(savedTunnelDomain) }
+    // [2026-06-10] OTA: アップデート設定
+    var manifestUrlInput by remember(portalManifestUrl) { mutableStateOf(portalManifestUrl) }
+    var checkTokenInput by remember(portalCheckToken) { mutableStateOf(portalCheckToken) }
+    var autoUpdateInput by remember(autoUpdateCheck) { mutableStateOf(autoUpdateCheck) }
+    var checkTokenVisible by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -178,6 +191,134 @@ fun SettingsTab(
                         colors = ButtonDefaults.buttonColors(containerColor = Teal)
                     ) {
                         Text("Tunnel 設定を保存")
+                    }
+                }
+            }
+        }
+
+        // [2026-06-10] OTA アップデート設定
+        item {
+            val ctx = LocalContext.current
+            val lcOwner = LocalLifecycleOwner.current
+            var installAllowed by remember {
+                mutableStateOf(ctx.packageManager.canRequestPackageInstalls())
+            }
+            DisposableEffect(lcOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) {
+                        installAllowed = ctx.packageManager.canRequestPackageInstalls()
+                    }
+                }
+                lcOwner.lifecycle.addObserver(observer)
+                onDispose { lcOwner.lifecycle.removeObserver(observer) }
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "アップデート",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "現在のバージョン: $currentVersionName (code $currentVersionCode)",
+                        fontSize = 12.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    // [Codex#1] 不明な提供元のインストール許可状態
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("不明な提供元のインストール許可", fontSize = 14.sp, color = NavyDark)
+                            Text(
+                                if (installAllowed) "許可済み（OTA 可能）"
+                                else "未許可（OTA はユーザー操作が必要になります）",
+                                fontSize = 11.sp,
+                                color = if (installAllowed) Teal else GrayLight
+                            )
+                        }
+                        if (!installAllowed) {
+                            OutlinedButton(onClick = { openUnknownAppSourcesSettings(ctx) }) {
+                                Text("許可設定")
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = manifestUrlInput,
+                        onValueChange = { manifestUrlInput = it },
+                        label = { Text("Portal Manifest URL") },
+                        placeholder = { Text("https://portal.example.com/api/bridge-app/manifest") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = checkTokenInput,
+                        onValueChange = { checkTokenInput = it },
+                        label = { Text("Check Token (Bearer)") },
+                        visualTransformation = if (checkTokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { checkTokenVisible = !checkTokenVisible }) {
+                                Icon(
+                                    imageVector = if (checkTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (checkTokenVisible) "非表示" else "表示"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("自動チェック（1時間ごと）", fontSize = 14.sp, color = NavyDark)
+                        Switch(
+                            checked = autoUpdateInput,
+                            onCheckedChange = { autoUpdateInput = it }
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { onManualUpdateCheck() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("今すぐ確認")
+                        }
+                        Button(
+                            onClick = {
+                                onSavePortalUpdateSettings(
+                                    manifestUrlInput.trim(),
+                                    checkTokenInput.trim(),
+                                    autoUpdateInput,
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                        ) {
+                            Text("設定を保存")
+                        }
                     }
                 }
             }
@@ -651,6 +792,26 @@ fun SettingsTab(
 private fun isBatteryOptimizationIgnored(context: Context): Boolean {
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+// [2026-06-10] OTA: 「不明な提供元のインストール」許可設定画面を開く（Codex#1）
+private fun openUnknownAppSourcesSettings(context: Context) {
+    try {
+        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+            data = Uri.parse("package:${context.packageName}")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        // フォールバック: アプリ詳細設定
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {}
+    }
 }
 
 // [2026-05-20] バッテリー最適化除外を要求するシステムダイアログを開く

@@ -265,6 +265,40 @@ class MainActivity : ComponentActivity() {
                         }
                         val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
                         saveLogLauncher.launch("chrome-bridge-log_$ts.txt")
+                    },
+                    // [2026-06-10] OTA: アップデート設定（manifest URL / token / 自動チェック）
+                    portalManifestUrl = settings.portalManifestUrl,
+                    portalCheckToken = settings.portalCheckToken,
+                    autoUpdateCheck = settings.autoUpdateCheck,
+                    onSavePortalUpdateSettings = { url, token, auto ->
+                        settings.portalManifestUrl = url
+                        settings.portalCheckToken = token
+                        settings.autoUpdateCheck = auto
+                        // [Codex 事後#1] サーバー本体を再起動せず Alarm のみ再登録
+                        serviceBinder?.refreshUpdateAlarm()
+                        Toast.makeText(this@MainActivity, "アップデート設定を保存しました", Toast.LENGTH_SHORT).show()
+                    },
+                    onManualUpdateCheck = {
+                        val intent = Intent(this@MainActivity, BridgeForegroundService::class.java).apply {
+                            action = BridgeForegroundService.ACTION_CHECK_UPDATE
+                        }
+                        startService(intent)
+                        Toast.makeText(this@MainActivity, "更新を確認しています…", Toast.LENGTH_SHORT).show()
+                    },
+                    currentVersionName = run {
+                        try {
+                            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+                        } catch (_: Exception) { "" }
+                    },
+                    currentVersionCode = run {
+                        try {
+                            val info = packageManager.getPackageInfo(packageName, 0)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                                info.longVersionCode.toInt()
+                            } else {
+                                @Suppress("DEPRECATION") info.versionCode
+                            }
+                        } catch (_: Exception) { 0 }
                     }
                 )
             }

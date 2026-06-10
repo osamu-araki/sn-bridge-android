@@ -1,4 +1,4 @@
-// Version: 2.1.0 | Updated: 2026-03-14
+// Version: 2.2.0 | Updated: 2026-06-10
 // [2026-03-08] バックグラウンドでサーバーを維持するための Foreground Service
 // [2026-03-08] Tunnel 管理（cloudflared）を統合
 // [2026-03-11] StatsDatabase / StatsCollector の初期化・ライフサイクル管理を追加
@@ -6,8 +6,10 @@
 // [2026-03-11] onTrimMemory でメモリ逼迫時に WebViewPool を縮小
 // [2026-03-12] BindException 対策: 起動時に既存サーバー停止＋リトライ、onTaskRemoved でクリーンアップ
 // [2026-03-13] メインスレッドデッドロック修正: Thread.sleep をメインスレッドで呼ばない
+// [2026-06-10] OTA: AlarmManager で 1 時間ごとに UpdateChecker を起動、ACTION_CHECK_UPDATE で手動 trigger
 package jp.salesnow.chromebridge.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -18,6 +20,7 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import jp.salesnow.chromebridge.MainActivity
 import jp.salesnow.chromebridge.R
@@ -31,7 +34,9 @@ import jp.salesnow.chromebridge.server.AuthMiddleware
 import jp.salesnow.chromebridge.server.BridgeHttpServer
 import jp.salesnow.chromebridge.server.RateLimiter
 import jp.salesnow.chromebridge.tunnel.TunnelManager
+import jp.salesnow.chromebridge.update.UpdateChecker
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 class BridgeForegroundService : Service() {
 
@@ -42,6 +47,9 @@ class BridgeForegroundService : Service() {
         // [2026-03-08] adb 等から Intent でトンネルを制御するためのアクション
         const val ACTION_START_TUNNEL = "jp.salesnow.chromebridge.START_TUNNEL"
         const val ACTION_STOP_TUNNEL = "jp.salesnow.chromebridge.STOP_TUNNEL"
+        // [2026-06-10] OTA: AlarmManager で周期実行されるアクション + UI/HTTP からの手動 trigger
+        const val ACTION_CHECK_UPDATE = "jp.salesnow.chromebridge.CHECK_UPDATE"
+        const val UPDATE_CHECK_INTERVAL_MS = 60L * 60L * 1000L  // 1 時間
     }
 
     private var server: BridgeHttpServer? = null
@@ -86,6 +94,10 @@ class BridgeForegroundService : Service() {
             }
             ACTION_STOP_TUNNEL -> {
                 stopTunnel()
+                return START_STICKY
+            }
+            ACTION_CHECK_UPDATE -> {
+                runUpdateCheck("alarm/intent")
                 return START_STICKY
             }
         }
@@ -144,7 +156,9 @@ class BridgeForegroundService : Service() {
             maxTimeout = settings.maxTimeout,
             maxWait = settings.maxWait,
             statsCollector = statsCollector,
-            statsRepository = statsRepository
+            statsRepository = statsRepository,
+            // [2026-06-10] OTA: HTTP /update-check 経由のトリガを Service の runUpdateCheck に橋渡し
+            onUpdateCheck = { runUpdateCheck("http") }
         ) { msg ->
             addHttpLog(msg)
         }
@@ -187,6 +201,70 @@ class BridgeForegroundService : Service() {
         if (settings.tunnelToken.isNotBlank()) {
             startTunnel()
         }
+
+        // [2026-06-10] OTA: 自動チェック ON なら周期 Alarm を登録
+        scheduleUpdateAlarm()
+    }
+
+    // [2026-06-10] OTA: 自動チェック Alarm（1 時間ごと）。設定が OFF なら解除する。
+    private fun scheduleUpdateAlarm() {
+        val mgr = getSystemService(ALARM_SERVICE) as AlarmManager
+        val pi = updatePendingIntent()
+        val settings = SettingsRepository(this)
+        if (!settings.autoUpdateCheck) {
+            mgr.cancel(pi)
+            return
+        }
+        val firstTrigger = SystemClock.elapsedRealtime() + UPDATE_CHECK_INTERVAL_MS
+        mgr.setInexactRepeating(
+            AlarmManager.ELAPSED_REALTIME,
+            firstTrigger,
+            UPDATE_CHECK_INTERVAL_MS,
+            pi,
+        )
+        addLog("OTA: 自動チェック登録（${UPDATE_CHECK_INTERVAL_MS / 60000} 分間隔）")
+    }
+
+    /** UI（Binder 経由）から呼ばれる: 自動チェック設定変更時に Alarm を再登録する。
+     *  サーバー本体は再起動しない（Codex 事後#1）。
+     */
+    fun refreshUpdateAlarm() {
+        scheduleUpdateAlarm()
+    }
+
+    private fun updatePendingIntent(): PendingIntent {
+        val intent = Intent(this, BridgeForegroundService::class.java).apply {
+            action = ACTION_CHECK_UPDATE
+        }
+        return PendingIntent.getService(
+            this, 2, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    // [2026-06-10] OTA: 多重実行防止（Codex#2）。Alarm/手動/HTTP の同時 trigger を 1 件に絞る。
+    private val updateInProgress = AtomicBoolean(false)
+
+    /** 別スレッドで manifest → DL → install を回す。手動 trigger / Alarm 共通。
+     *  既に実行中なら skip し、戻り値で呼び出し側に伝える。
+     */
+    fun runUpdateCheck(origin: String): Boolean {
+        if (!updateInProgress.compareAndSet(false, true)) {
+            addLog("OTA: 既に実行中のためスキップ ($origin)")
+            return false
+        }
+        addLog("OTA: 更新チェック開始 ($origin)")
+        Thread {
+            try {
+                val checker = UpdateChecker(applicationContext) { msg -> addLog(msg) }
+                checker.checkAndInstall()
+            } catch (e: Exception) {
+                addLog("OTA: 例外 ${e.message}")
+            } finally {
+                updateInProgress.set(false)
+            }
+        }.start()
+        return true
     }
 
     // [2026-03-08] Tunnel の開始・停止
@@ -231,6 +309,11 @@ class BridgeForegroundService : Service() {
 
     // [2026-03-12] サーバー・プール・統計のクリーンアップ（startServer からも呼ばれる）
     private fun stopServerInternal() {
+        // [2026-06-10] OTA: 周期 Alarm を解除（残ると停止後も自己再起動を試みてしまう）
+        try {
+            val mgr = getSystemService(ALARM_SERVICE) as AlarmManager
+            mgr.cancel(updatePendingIntent())
+        } catch (_: Exception) {}
         try { server?.stopServer() } catch (_: Exception) {}
         server = null
         try { webViewPool?.destroy() } catch (_: Exception) {}

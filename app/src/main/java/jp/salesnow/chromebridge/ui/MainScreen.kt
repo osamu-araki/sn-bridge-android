@@ -68,7 +68,15 @@ fun MainScreen(
     logAutoBackup: Boolean = false,
     onLogAutoBackupChange: (Boolean) -> Unit = {},
     logBackupFolderName: String = "",
-    onSelectBackupFolder: () -> Unit = {}
+    onSelectBackupFolder: () -> Unit = {},
+    // [2026-06-10] OTA: アップデート設定
+    portalManifestUrl: String = "",
+    portalCheckToken: String = "",
+    autoUpdateCheck: Boolean = true,
+    onSavePortalUpdateSettings: (url: String, token: String, auto: Boolean) -> Unit = { _, _, _ -> },
+    onManualUpdateCheck: () -> Unit = {},
+    currentVersionName: String = "",
+    currentVersionCode: Int = 0
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     // [2026-03-14] 3タブ構成
@@ -157,7 +165,14 @@ fun MainScreen(
                 logAutoBackup = logAutoBackup,
                 onLogAutoBackupChange = onLogAutoBackupChange,
                 logBackupFolderName = logBackupFolderName,
-                onSelectBackupFolder = onSelectBackupFolder
+                onSelectBackupFolder = onSelectBackupFolder,
+                portalManifestUrl = portalManifestUrl,
+                portalCheckToken = portalCheckToken,
+                autoUpdateCheck = autoUpdateCheck,
+                onSavePortalUpdateSettings = onSavePortalUpdateSettings,
+                onManualUpdateCheck = onManualUpdateCheck,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode
             )
         }
 

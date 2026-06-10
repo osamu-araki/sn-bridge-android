@@ -33,6 +33,9 @@ class BridgeHttpServer(
     private val maxWait: Int = 10,
     private val statsCollector: StatsCollector? = null,
     private val statsRepository: StatsRepository? = null,
+    // [2026-06-10] OTA: Portal の notify から POST /update-check で呼ばれる
+    //   戻り値は「実際に起動したか」（false = 既に実行中で skip）
+    private val onUpdateCheck: (() -> Boolean)? = null,
     private val onLog: (String) -> Unit = {}
 ) : NanoHTTPD(port) {
 
@@ -82,6 +85,8 @@ class BridgeHttpServer(
                 method == Method.GET && uri == "/status" -> handleStatus()
                 // [2026-03-11] 統計 API エンドポイント
                 method == Method.GET && uri == "/stats" -> handleStats(session)
+                // [2026-06-10] OTA: Portal の notify から呼ばれる「今すぐ更新確認」
+                method == Method.POST && uri == "/update-check" -> handleUpdateCheck(session)
                 else -> errorResponse(
                     Status.NOT_FOUND, "not_found",
                     "エンドポイントが見つかりません", retryable = false, category = "client"
@@ -401,6 +406,34 @@ class BridgeHttpServer(
             "total_timeouts" to metricTimeouts.get(),
             "avg_elapsed_ms" to avgElapsed
         ))
+    }
+
+    // [2026-06-10] OTA: Portal の notify から呼ばれる「今すぐ manifest をチェック」
+    //   認証は /fetch と同じ API キー（Bearer）。fire-and-forget で 200 を返し、
+    //   実際の DL / install は別スレッドで実行される（Service の callback 内で）。
+    //   既に実行中なら 200 { ok:true, skipped:"already_running" } を返す（Codex#2）。
+    private fun handleUpdateCheck(session: IHTTPSession): Response {
+        val authResult = auth.check(
+            session.headers["authorization"],
+            session.remoteIpAddress
+        )
+        if (authResult is AuthMiddleware.AuthResult.Error) {
+            val status = if (authResult.code == 401) Status.UNAUTHORIZED else Status.FORBIDDEN
+            val code = if (authResult.code == 401) "unauthorized" else "forbidden"
+            return errorResponse(status, code, authResult.message, retryable = false, category = "client")
+        }
+        val cb = onUpdateCheck
+        if (cb == null) {
+            return errorResponse(
+                statusServiceUnavailable, "no_handler",
+                "更新ハンドラ未登録", retryable = false, category = "bridge"
+            )
+        }
+        val started = cb.invoke()
+        return jsonResponse(
+            Status.OK,
+            if (started) mapOf("ok" to true) else mapOf("ok" to true, "skipped" to "already_running")
+        )
     }
 
     // [2026-03-11] GET /stats?period=daily&limit=30 or period=monthly&limit=12

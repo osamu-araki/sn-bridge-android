@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Version: 1.4.0 | Updated: 2026-05-20 -->
+<!-- Version: 1.5.0 | Updated: 2026-06-10 -->
 <!-- [2026-03-13] ChallengeActivity 追加（Cloudflare 認証の手動解除画面） -->
 <!-- [2026-04-11] SYSTEM_ALERT_WINDOW 追加（タップ不要でチャレンジ画面を直接起動） -->
 <!-- [2026-05-18] ChromeBridgeApp 登録（未捕捉例外ハンドラ） -->
 <!-- [2026-05-20] BOOT_COMPLETED Receiver + バッテリー最適化除外要求権限を追加 -->
+<!-- [2026-06-10] OTA: REQUEST_INSTALL_PACKAGES 権限 + PackageInstallerReceiver 登録 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -19,6 +20,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- [2026-05-20] バッテリー最適化除外を要求する（OEM の積極的省電力で殺されるのを防ぐ） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- [2026-06-10] OTA: ダウンロードした APK をユーザー操作なしで自己インストール -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".ChromeBridgeApp"
@@ -64,6 +67,16 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- [2026-06-10] OTA: PackageInstaller.commit() の結果コールバック受信 -->
+        <receiver
+            android:name=".update.PackageInstallerReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="jp.salesnow.chromebridge.OTA_INSTALL_RESULT" />
             </intent-filter>
         </receiver>
 

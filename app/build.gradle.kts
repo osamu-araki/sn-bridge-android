@@ -1,4 +1,4 @@
-// Version: 1.1.0 | Updated: 2026-03-08
+// Version: 1.2.0 | Updated: 2026-06-10
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +13,8 @@ android {
         applicationId = "jp.salesnow.chromebridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildTypes {
