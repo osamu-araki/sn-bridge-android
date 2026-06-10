@@ -11,6 +11,17 @@ android {
     namespace = "jp.salesnow.chromebridge"
     compileSdk = 35
 
+    // [2026-06-10] CI 上で AGP のデフォルト挙動が ~/.android/debug.keystore を見ない
+    //   ケースがあったため、debug 署名 keystore のパスを明示する。
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "jp.salesnow.chromebridge"
         minSdk = 26
