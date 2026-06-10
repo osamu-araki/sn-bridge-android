@@ -5,6 +5,8 @@
 # 必要な GitHub Secrets:
 #   - PORTAL_BASE_URL              例: https://portal.example.com
 #   - BRIDGE_APP_UPLOAD_TOKEN      Portal /admin/bridge-monitor/releases で発行
+#   - BRIDGE_APP_CHECK_TOKEN_BUILD APK にビルド時埋め込みする端末側 manifest 認証用 Bearer
+#                                  Portal の `bridge_app_check_token` と同値
 #   - ANDROID_DEBUG_KEYSTORE_B64   既存端末と同じ debug 署名を保つため、ローカル
 #                                  ~/.android/debug.keystore を base64 化したもの
 #
@@ -64,6 +66,8 @@ jobs:
         env:
           VERSION_CODE_OVERRIDE: ${{ env.VERSION_CODE_OVERRIDE }}
           VERSION_NAME_OVERRIDE: ${{ env.VERSION_NAME_OVERRIDE }}
+          # [2026-06-10] APK にビルド時埋め込み: DEFAULT_PORTAL_CHECK_TOKEN
+          BRIDGE_APP_CHECK_TOKEN_BUILD: ${{ secrets.BRIDGE_APP_CHECK_TOKEN_BUILD }}
 
       - name: Locate APK
         id: locate

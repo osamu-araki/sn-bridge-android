@@ -12,6 +12,7 @@ OTA リリース一覧に `is_published=false` で投入する。公開（端末
 |---|---|
 | `PORTAL_BASE_URL` | Portal のベース URL（例: `https://portal.example.com`、末尾スラッシュなし） |
 | `BRIDGE_APP_UPLOAD_TOKEN` | Portal の `/admin/bridge-monitor` → リリースタブの **Upload Token** から「Token を発行」して得た値 |
+| `BRIDGE_APP_CHECK_TOKEN_BUILD` | Portal の `bridge_app_check_token`（端末側 manifest 認証 Bearer）と同値。APK にビルド時埋め込み |
 | `ANDROID_DEBUG_KEYSTORE_B64` | ローカルで運用中の `~/.android/debug.keystore` を base64 化したもの（既存端末と同じ署名を保つため） |
 
 ### `ANDROID_DEBUG_KEYSTORE_B64` の作り方（macOS）

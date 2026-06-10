@@ -1,5 +1,6 @@
-// Version: 1.3.0 | Updated: 2026-06-10
+// Version: 1.4.0 | Updated: 2026-06-10
 // [2026-06-10] versionCode / versionName を環境変数で上書き可能に（GitHub Actions 用）
+// [2026-06-10] OTA デフォルト値（manifest URL / check token）を BuildConfig 経由で埋め込む
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,6 +18,20 @@ android {
         // [2026-06-10] CI から env で上書き可能（手元ビルドは固定値）
         versionCode = System.getenv("VERSION_CODE_OVERRIDE")?.toIntOrNull() ?: 3
         versionName = System.getenv("VERSION_NAME_OVERRIDE") ?: "1.2.0"
+
+        // [2026-06-10] OTA デフォルト値（端末側で空欄なら BuildConfig から fallback）
+        //   - manifest URL は固定値（公開エンドポイント）
+        //   - check token は CI ビルド時の env から注入。env 無し（手元ビルド）の場合は空文字
+        buildConfigField(
+            "String",
+            "DEFAULT_PORTAL_MANIFEST_URL",
+            "\"https://cs.salesnow.jp/api/bridge-app/manifest\"",
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_PORTAL_CHECK_TOKEN",
+            "\"${System.getenv("BRIDGE_APP_CHECK_TOKEN_BUILD") ?: ""}\"",
+        )
     }
 
     buildTypes {
@@ -37,6 +52,8 @@ android {
 
     buildFeatures {
         compose = true
+        // [2026-06-10] OTA デフォルト値 (DEFAULT_PORTAL_MANIFEST_URL / DEFAULT_PORTAL_CHECK_TOKEN)
+        buildConfig = true
     }
 
     // [2026-03-08] cloudflared バイナリ（Go ELF）をストリップしない

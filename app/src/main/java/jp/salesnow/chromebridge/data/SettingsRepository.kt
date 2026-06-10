@@ -1,12 +1,14 @@
-// Version: 1.3.0 | Updated: 2026-06-10
+// Version: 1.4.0 | Updated: 2026-06-10
 // [2026-03-08] Tunnel トークン設定を追加
 // [2026-03-11] 並列処理・キュー・タイムアウト設定を追加
 // [2026-06-10] OTA アップデート設定（Portal manifest URL / トークン / 自動チェック）を追加
+// [2026-06-10] OTA 設定の空欄時 BuildConfig fallback（CI ビルドで埋め込んだデフォルト）
 package jp.salesnow.chromebridge.data
 
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import jp.salesnow.chromebridge.BuildConfig
 
 class SettingsRepository(context: Context) {
     private val prefs: SharedPreferences =
@@ -80,14 +82,17 @@ class SettingsRepository(context: Context) {
         set(value) = prefs.edit { putString("log_backup_uri", value) }
 
     // [2026-06-10] OTA: Portal manifest エンドポイント
-    //   例: https://portal.salesnow-cs.jp/api/bridge-app/manifest
+    //   端末で未保存 / 空文字なら BuildConfig のデフォルト値（CI ビルド時に埋め込み）に fallback
     var portalManifestUrl: String
-        get() = prefs.getString("portal_manifest_url", "") ?: ""
+        get() = (prefs.getString("portal_manifest_url", "") ?: "")
+            .ifBlank { BuildConfig.DEFAULT_PORTAL_MANIFEST_URL }
         set(value) = prefs.edit { putString("portal_manifest_url", value) }
 
     // [2026-06-10] OTA: manifest 認証用 Bearer トークン（Portal の system_settings に同じ値）
+    //   同上、BuildConfig fallback
     var portalCheckToken: String
-        get() = prefs.getString("portal_check_token", "") ?: ""
+        get() = (prefs.getString("portal_check_token", "") ?: "")
+            .ifBlank { BuildConfig.DEFAULT_PORTAL_CHECK_TOKEN }
         set(value) = prefs.edit { putString("portal_check_token", value) }
 
     // [2026-06-10] OTA: 自動チェック ON/OFF（デフォルト ON、間隔は固定 1 時間）
