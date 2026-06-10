@@ -65,6 +65,21 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
+      # [2026-06-10] cloudflared バイナリ（27MB）は .gitignore 除外のため CI で取得する。
+      #   公式 Linux ARM64 ELF をそのまま jniLibs/arm64-v8a/libcloudflared.so として配置。
+      - name: Download cloudflared binary
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          curl -fsSL -o app/src/main/jniLibs/arm64-v8a/libcloudflared.so \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
+          SIZE=$(wc -c < app/src/main/jniLibs/arm64-v8a/libcloudflared.so | tr -d ' ')
+          if [ "$SIZE" -lt 10000000 ]; then
+            echo "cloudflared バイナリのサイズが小さすぎます: $SIZE bytes" >&2
+            exit 1
+          fi
+          echo "cloudflared size: $SIZE bytes"
+          file app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+
       - name: Build debug APK
         run: ./gradlew --no-daemon assembleDebug
         env:
