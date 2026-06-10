@@ -1,4 +1,5 @@
-// Version: 1.2.0 | Updated: 2026-06-10
+// Version: 1.3.0 | Updated: 2026-06-10
+// [2026-06-10] versionCode / versionName を環境変数で上書き可能に（GitHub Actions 用）
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +14,9 @@ android {
         applicationId = "jp.salesnow.chromebridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        // [2026-06-10] CI から env で上書き可能（手元ビルドは固定値）
+        versionCode = System.getenv("VERSION_CODE_OVERRIDE")?.toIntOrNull() ?: 3
+        versionName = System.getenv("VERSION_NAME_OVERRIDE") ?: "1.2.0"
     }
 
     buildTypes {
