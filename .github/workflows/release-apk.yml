@@ -50,11 +50,15 @@ jobs:
       - name: Restore debug keystore from secret
         run: |
           mkdir -p ~/.android
-          echo "$ANDROID_DEBUG_KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          # 念のため CR/LF を除去してから base64 decode（Secret に改行が混入していても吸収）
+          printf '%s' "$ANDROID_DEBUG_KEYSTORE_B64" | tr -d '\r\n' | base64 -d > ~/.android/debug.keystore
           if [ ! -s ~/.android/debug.keystore ]; then
             echo "ANDROID_DEBUG_KEYSTORE_B64 が空 / 不正です。Secrets を確認してください。" >&2
             exit 1
           fi
+          # 復元後の keystore SHA-1 をログ出力（既存端末と一致するかは目視確認）
+          keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey 2>&1 \
+            | grep "SHA1:" || true
         env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
 
