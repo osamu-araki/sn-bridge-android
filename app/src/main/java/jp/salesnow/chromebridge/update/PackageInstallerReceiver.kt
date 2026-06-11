@@ -46,7 +46,7 @@ class PackageInstallerReceiver : BroadcastReceiver() {
         try {
             val manager = context.getSystemService(NotificationManager::class.java)
             val notif = NotificationCompat.Builder(context, BridgeForegroundService.CHANNEL_ID)
-                .setContentTitle("Chrome Bridge OTA")
+                .setContentTitle("SalesNow Bridge OTA")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setAutoCancel(true)

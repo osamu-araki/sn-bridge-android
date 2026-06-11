@@ -403,7 +403,7 @@ class BridgeForegroundService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Chrome Bridge")
+            .setContentTitle("SalesNow Bridge")
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .setContentIntent(pendingOpen)

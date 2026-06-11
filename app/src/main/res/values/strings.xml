@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Chrome Bridge</string>
-    <string name="notification_channel_name">Chrome Bridge サーバー</string>
+    <string name="app_name">SalesNow Bridge</string>
+    <string name="notification_channel_name">SalesNow Bridge サーバー</string>
     <string name="notification_channel_desc">サーバー稼働中の通知</string>
 </resources>

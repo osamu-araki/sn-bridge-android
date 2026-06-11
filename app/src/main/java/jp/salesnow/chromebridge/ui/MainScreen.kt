@@ -94,7 +94,7 @@ fun MainScreen(
         ) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Text(
-                    "Chrome Bridge",
+                    "SalesNow Bridge",
                     color = Color.White,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold
@@ -178,7 +178,7 @@ fun MainScreen(
 
         // フッター
         Text(
-            "Chrome Bridge Android v2.0.0",
+            "SalesNow Bridge Android",
             fontSize = 12.sp,
             color = GrayLight,
             modifier = Modifier

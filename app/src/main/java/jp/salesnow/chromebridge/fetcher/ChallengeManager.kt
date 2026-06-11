@@ -168,7 +168,7 @@ object ChallengeManager {
         Thread {
             try {
                 val payload = JSONObject().apply {
-                    put("text", ":warning: *Chrome Bridge: 認証チャレンジ検知*\n手動認証が必要です。端末を確認してください。")
+                    put("text", ":warning: *SalesNow Bridge: 認証チャレンジ検知*\n手動認証が必要です。端末を確認してください。")
                 }
                 val conn = URL(webhookUrl).openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
