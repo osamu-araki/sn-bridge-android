@@ -176,9 +176,12 @@ fun MainScreen(
             )
         }
 
-        // フッター
+        // フッター（バージョン情報）
         Text(
-            "SalesNow Bridge Android",
+            if (currentVersionName.isNotBlank())
+                "SalesNow Bridge Android  v$currentVersionName (build $currentVersionCode)"
+            else
+                "SalesNow Bridge Android",
             fontSize = 12.sp,
             color = GrayLight,
             modifier = Modifier
