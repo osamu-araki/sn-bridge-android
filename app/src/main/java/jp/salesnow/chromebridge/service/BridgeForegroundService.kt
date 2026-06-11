@@ -279,6 +279,8 @@ class BridgeForegroundService : Service() {
         }
 
         val domain = settings.tunnelDomain
+        // [2026-06-11] 既存 manager の cooldown/restart スレッドが残らないよう必ず stop() してから作り直す
+        tunnelManager?.stop()
         tunnelManager = TunnelManager(this) { msg -> addLog(msg) }
         tunnelManager?.start(token, port, domain)
 

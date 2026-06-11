@@ -29,21 +29,29 @@ class TunnelManager(
         const val DEFAULT_CLOUDFLARED_EDGE_IPS =
             "198.41.192.27:7844,198.41.192.47:7844,198.41.192.67:7844," +
                 "198.41.200.13:7844,198.41.200.33:7844,198.41.200.43:7844"
+
+        // [2026-06-11] サイレント死回避: 5回連続失敗後、この時間経過したら再試行する
+        const val COOLDOWN_AFTER_MAX_FAILURES_MS = 30L * 60L * 1000L  // 30 分
     }
 
-    private var process: Process? = null
+    @Volatile private var process: Process? = null
     private var logThread: Thread? = null
     private var dnsProxy: DnsProxy? = null
 
     // [2026-03-12] 自動再起動用の状態管理
-    private var autoRestart = true
-    private var lastToken: String = ""
-    private var lastPort: Int = 3000
-    private var lastDomain: String = ""
-    private var restartCount = 0
+    // [2026-06-11] @Volatile + restartGeneration: 複数スレッドからの restart スケジュール競合を防ぐ
+    @Volatile private var autoRestart = true
+    @Volatile private var lastToken: String = ""
+    @Volatile private var lastPort: Int = 3000
+    @Volatile private var lastDomain: String = ""
+    @Volatile private var restartCount = 0
     private val maxRestarts = 5
-    private var restartThread: Thread? = null
+    @Volatile private var restartThread: Thread? = null
     private var healthCheckThread: Thread? = null
+
+    // [2026-06-11] restart スケジュールごとに世代番号を付与。古い thread は実行直前に
+    //   「自分は最新の世代か」を確認して stale なら no-op する。複数経路の重複起動を防止。
+    private val restartGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var consecutiveFailures = 0
     private val healthCheckFailThreshold = 3
 
@@ -148,11 +156,20 @@ class TunnelManager(
         } catch (_: Exception) {}
     }
 
+    @Synchronized
     fun start(token: String, port: Int, domain: String = "") {
         if (isRunning) {
             onLog("Tunnel は既に稼働中です")
             return
         }
+
+        // [2026-06-11] 既存の pending restart/cooldown thread を確実に stale 化してから手動開始
+        //   sleep 復帰後の thread が startInternal を二重実行しないよう世代を進める
+        //   @Synchronized で tryStartFromScheduled / scheduleRestartOrCooldown と排他
+        restartGeneration.incrementAndGet()
+        restartThread?.interrupt()
+        restartThread = null
+        restartCount = 0
 
         // [2026-03-12] orphan プロセスを先に kill
         killOrphanProcesses()
@@ -263,29 +280,9 @@ class TunnelManager(
 
                     // [2026-03-12] autoRestart が有効なら exit code に関わらず再起動
                     // stop() 呼び出し時は autoRestart=false になるので再起動しない
-                    if (autoRestart && restartCount < maxRestarts) {
-                        restartCount++
-                        val delaySec = minOf(restartCount * 3, 15) // 3s, 6s, 9s, 12s, 15s
-                        onLog("Tunnel 自動再起動 ($restartCount/$maxRestarts): ${delaySec}秒後...")
-                        restartThread = Thread {
-                            try {
-                                Thread.sleep(delaySec * 1000L)
-                                if (autoRestart) {
-                                    startInternal(lastToken, lastPort, lastDomain, getBinaryPath())
-                                }
-                            } catch (_: InterruptedException) {
-                                // stop() で中断された場合
-                            }
-                        }.apply {
-                            isDaemon = true
-                            name = "tunnel-restart"
-                            start()
-                        }
-                    } else if (!autoRestart) {
-                        // stop() による正常終了 — 何もしない
-                    } else {
-                        onLog("Tunnel 再起動上限 (${maxRestarts}回) に達しました。手動で再接続してください。")
-                        restartCount = 0
+                    // [2026-06-11] restart スケジュールは scheduleRestartOrCooldown() に集約
+                    if (autoRestart) {
+                        scheduleRestartOrCooldown()
                     }
                 } catch (_: Exception) {}
             }.apply {
@@ -362,7 +359,8 @@ class TunnelManager(
                     onLog("Tunnel ヘルスチェック失敗 ($consecutiveFailures/$healthCheckFailThreshold): ${e.message}")
                 }
 
-                if (consecutiveFailures >= healthCheckFailThreshold && autoRestart && restartCount < maxRestarts) {
+                // [2026-06-11] 上限到達でも forceRestart→scheduleRestartOrCooldown で cooldown 経路に合流
+                if (consecutiveFailures >= healthCheckFailThreshold && autoRestart) {
                     onLog("Tunnel ヘルスチェック ${healthCheckFailThreshold}回連続失敗: プロセスを再起動します")
                     forceRestart()
                     break
@@ -376,37 +374,82 @@ class TunnelManager(
     }
 
     // [2026-03-12] プロセスを強制終了して再起動
+    // [2026-06-11] schedule は process.waitFor() 完了側の logThread に一本化。
+    //   ここでは destroy だけ行い、終了検知ループから scheduleRestartOrCooldown() が呼ばれる。
+    //   こうしないと healthcheck 起点と process 終了起点で restartCount が二重カウントされる。
     private fun forceRestart() {
         process?.let { p ->
             p.destroyForcibly()
             try { p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) {}
         }
-        process = null
-        logThread?.interrupt()
-        logThread = null
+        // logThread の interrupt はしない（process.waitFor() を抜けて schedule に流す）
+    }
 
-        restartCount++
-        val delaySec = minOf(restartCount * 3, 15)
-        onLog("Tunnel 強制再起動 ($restartCount/$maxRestarts): ${delaySec}秒後...")
+    /**
+     * [2026-06-11] scheduled thread からの起動エントリ。
+     *   manual start() / stop() と同一ロックを取って、check → startInternal を atomic に実行する。
+     */
+    @Synchronized
+    private fun tryStartFromScheduled(gen: Int, isCooldown: Boolean) {
+        if (!autoRestart) return
+        if (restartGeneration.get() != gen) return  // 後発に上書きされた
+        if (isRunning) return                        // manual start() で既に起動済み
+        if (isCooldown) {
+            restartCount = 0
+            onLog("Tunnel cooldown 経過: 再試行を開始します")
+        }
+        startInternal(lastToken, lastPort, lastDomain, getBinaryPath())
+    }
+
+    /**
+     * [2026-06-11] restart スケジュールの単一エントリ。
+     *   - 残り試行回数があれば 3〜15 秒後の short restart を予約
+     *   - 上限到達なら 30 分後の cooldown 後に restartCount=0 にして再試行
+     *   - 古い scheduled thread は次回スケジュール時に interrupt + 世代番号で stale 化される
+     */
+    @Synchronized
+    private fun scheduleRestartOrCooldown() {
+        if (!autoRestart) return
+        // 古い scheduled thread を停止し、世代を進める
+        restartThread?.interrupt()
+        val myGen = restartGeneration.incrementAndGet()
+
+        val isCooldown = restartCount >= maxRestarts
+        if (!isCooldown) restartCount++
+
+        val delayMs = if (isCooldown) {
+            val mins = COOLDOWN_AFTER_MAX_FAILURES_MS / 60_000
+            onLog("Tunnel 再起動上限 (${maxRestarts}回) に達しました。${mins}分後に自動再試行します")
+            COOLDOWN_AFTER_MAX_FAILURES_MS
+        } else {
+            val delaySec = minOf(restartCount * 3, 15)
+            onLog("Tunnel 自動再起動 ($restartCount/$maxRestarts): ${delaySec}秒後...")
+            delaySec * 1000L
+        }
 
         restartThread = Thread {
             try {
-                Thread.sleep(delaySec * 1000L)
-                if (autoRestart) {
-                    startInternal(lastToken, lastPort, lastDomain, getBinaryPath())
-                }
-            } catch (_: InterruptedException) {}
+                Thread.sleep(delayMs)
+                // [2026-06-11] 全 check + 実行を同一ロックに入れて TOCTOU を完全に排除
+                tryStartFromScheduled(myGen, isCooldown)
+            } catch (_: InterruptedException) {
+                // stop() / 上書きされた場合
+            }
         }.apply {
             isDaemon = true
-            name = "tunnel-restart"
+            name = if (isCooldown) "tunnel-cooldown" else "tunnel-restart"
             start()
         }
     }
 
+    @Synchronized
     fun stop() {
         // [2026-03-12] 自動再起動を無効化してから停止
         autoRestart = false
         restartCount = 0
+        // [2026-06-11] 世代を進めて、sleep 復帰後の古い scheduled thread を確実に stale 化
+        //   @Synchronized で start / tryStartFromScheduled と排他
+        restartGeneration.incrementAndGet()
         restartThread?.interrupt()
         restartThread = null
         healthCheckThread?.interrupt()
