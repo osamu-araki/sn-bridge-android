@@ -1,4 +1,4 @@
-# Chrome Bridge Android
+# SalesNow Bridge Android
 
 Android 端末上で HTTP サーバー + WebView ページ取得 + Cloudflare Tunnel を提供するアプリ。
 外部クライアント（n8n / GAS / curl 等）から `POST /fetch` でページ内容を取得できる。
@@ -6,7 +6,7 @@ Android 端末上で HTTP サーバー + WebView ページ取得 + Cloudflare Tu
 ## 構成
 
 ```
-Chrome Bridge Android
+SalesNow Bridge Android
 ├── BridgeHttpServer (NanoHTTPd)    … HTTP API サーバー
 ├── HeadlessWebViewFetcher          … WebView によるページ取得
 ├── BridgeForegroundService         … バックグラウンド維持
@@ -156,8 +156,8 @@ curl -X POST https://<tunnel-domain>/fetch \
 ### 1. リポジトリのクローン
 
 ```bash
-git clone https://github.com/salesnow-cs/chrome-bridge-android.git
-cd chrome-bridge-android
+git clone https://github.com/salesnow-cs/sn-bridge-android.git
+cd sn-bridge-android
 ```
 
 ### 2. Android SDK / NDK のインストール
@@ -205,7 +205,7 @@ cp /tmp/cloudflared-android <project>/app/src/main/jniLibs/arm64-v8a/libcloudfla
 ### 4. APK のビルド
 
 ```bash
-cd chrome-bridge-android
+cd sn-bridge-android
 ./gradlew assembleDebug
 ```
 
@@ -286,7 +286,7 @@ curl -X POST https://<tunnel-domain>/fetch \
 ## バックグラウンド動作
 
 - Foreground Service により、アプリを閉じてもサーバーと Tunnel は維持される
-- 通知バーに「Chrome Bridge」が表示されている間は稼働中
+- 通知バーに「SalesNow Bridge」が表示されている間は稼働中
 - 端末再起動後は `BootReceiver` が Service を自動起動する
 
 ## 長期稼働のための設定（必須）
@@ -299,13 +299,13 @@ Android OS とメーカー独自の省電力機構によって、Foreground Serv
 ### 1. バッテリー最適化の除外（Android 標準）
 
 設定タブの「除外設定」ボタン → システムダイアログで許可。
-端末側の手順: 設定 → 電池 → バッテリー最適化 → Chrome Bridge を「最適化しない」。
+端末側の手順: 設定 → 電池 → バッテリー最適化 → SalesNow Bridge を「最適化しない」。
 
 ### 2. メーカー独自の自動起動許可（最重要）
 
 **OPPO / Realme / Xiaomi / Redmi / Poco / Huawei / Honor / Vivo / iQOO** 等は、
 標準のバッテリー最適化除外だけでは不十分。各メーカーの「自動起動管理」画面で
-Chrome Bridge を**明示的に許可**する必要がある。
+SalesNow Bridge を**明示的に許可**する必要がある。
 
 設定タブの「自動起動設定を開く（メーカー名）」ボタンから該当画面に直接遷移する。
 
@@ -319,7 +319,7 @@ Chrome Bridge を**明示的に許可**する必要がある。
 
 ### 3. 最近使ったアプリでロック（推奨）
 
-タスクリスト（最近使ったアプリ）から Chrome Bridge を「ロック」状態にする
+タスクリスト（最近使ったアプリ）から SalesNow Bridge を「ロック」状態にする
 （メーカー UI により名称異なる、長押し → 鍵アイコン等）。これでユーザー誤操作・
 端末メモリ整理時の停止を防げる。
 
