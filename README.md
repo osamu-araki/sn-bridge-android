@@ -1,7 +1,11 @@
 # SalesNow Bridge Android
 
-Android 端末上で HTTP サーバー + WebView ページ取得 + Cloudflare Tunnel を提供するアプリ。
-外部クライアント（n8n / GAS / curl 等）から `POST /fetch` でページ内容を取得できる。
+Android 端末上で HTTP サーバー + WebView ページ取得 + Cloudflare Tunnel を提供する社内ツール。
+外部クライアント（n8n / GAS / curl 等）から `POST /fetch` でページ内容を取得する。
+
+社内 3 台（bridge1 / bridge2 / bridge3）が常時稼働し、SalesNow Customer Portal
+（[QuickWorkInc/sncs-customer-portal](https://github.com/QuickWorkInc/sncs-customer-portal)）から
+ヘルス監視・OTA 配信・リリース管理が行われる。
 
 ## 構成
 
@@ -11,6 +15,7 @@ SalesNow Bridge Android
 ├── HeadlessWebViewFetcher          … WebView によるページ取得
 ├── BridgeForegroundService         … バックグラウンド維持
 ├── TunnelManager + DnsProxy        … cloudflared プロセス管理
+├── UpdateChecker (OTA)             … Portal manifest 取得 → 自己更新
 └── UI (Jetpack Compose)            … 設定・ログ表示
 ```
 
@@ -48,240 +53,113 @@ curl -X POST https://<tunnel-domain>/fetch \
   "title": "Example Domain",
   "text": "Example Domain\nThis domain is for use in...",
   "length": 129,
-  "elapsed_ms": 3076
+  "elapsed_ms": 1234
 }
 ```
-
-**レスポンス例（dom モード）:**
-
-```json
-{
-  "ok": true,
-  "mode": "dom",
-  "url": "https://ja.wikipedia.org/wiki/東京都",
-  "title": "東京都 - Wikipedia",
-  "text": "...",
-  "length": 1503,
-  "elapsed_ms": 7263,
-  "dom": {
-    "meta": {...},
-    "headings": [{"level": 1, "text": "東京都"}, ...],
-    "links": [...],
-    "tables": [...],
-    "images": [...]
-  }
-}
-```
-
-**エラーレスポンス:**
-
-エラー時は以下の形式で返す。`retryable` と `category` を見て再試行可否を判定できる。
-
-```json
-{
-  "ok": false,
-  "error": "pool_busy",
-  "message": "WebView プールが空きません（5秒待機）",
-  "retryable": true,
-  "category": "bridge"
-}
-```
-
-| フィールド | 説明 |
-|-----------|------|
-| retryable | 再試行で回復しうるか（true: 再試行可 / false: 再試行不可） |
-| category | `bridge`（Bridge 自身の一時障害）/ `target`（対象 URL 個別の失敗）/ `client`（リクエスト不正） |
-
-**ステータスコードとエラー種別:**
-
-原則として **HTTP 500 は返さない**。一時障害は 503、対象 URL 個別の失敗は 200 + `ok:false`、
-クライアント起因は 4xx で返す。
-
-| error | HTTP | retryable | category | 説明 |
-|-------|------|-----------|----------|------|
-| server_busy | 503 | true | bridge | 処理中リクエストが上限超過（過負荷） |
-| pool_busy | 503 | true | bridge | WebView プールが枯渇 |
-| renderer_gone | 503 | true | bridge | WebView レンダラが異常終了（自動復旧する） |
-| internal_error | 503 | true | bridge | 想定外の内部エラー |
-| timeout | 200 | true | target | ページ取得がタイムアウト |
-| fetch_failed | 200 | true | target | WebView のページ読み込みエラー |
-| extract_failed | 200 | false | target | ページからのテキスト/DOM 抽出に失敗 |
-| parse_failed | 200 | false | target | 抽出結果のパースに失敗 |
-| bad_request | 400 | false | client | url 未指定・JSON 不正など |
-| unauthorized / forbidden | 401 / 403 | false | client | API キー認証エラー |
-
-- **503** には `Retry-After`（秒）ヘッダが付与される。クライアントはこの間隔を空けて再試行する。
-- **200 + `ok:false`** は「Bridge は正常だが対象 URL の取得に失敗した」ことを意味する。
-  クライアントは HTTP ステータスだけでなく必ずレスポンスボディの `ok` を確認すること。
 
 ### `GET /status`
 
-サーバーの状態を返す。
-
-```json
-{
-  "webview_ready": true,
-  "pending_requests": 0,
-  "queue_depth": 0,
-  "pool_size": 4,
-  "pool_available": 4,
-  "max_timeout": 60,
-  "max_wait": 10,
-  "uptime_seconds": 3593,
-  "total_requests": 1284,
-  "total_errors": 17,
-  "total_timeouts": 9,
-  "avg_elapsed_ms": 4231
-}
-```
-
-| フィールド | 説明 |
-|-----------|------|
-| pending_requests / queue_depth | 処理中＋プール待ちのリクエスト数 |
-| pool_size / pool_available | WebView プールの総数 / 空き数 |
-| total_requests / total_errors / total_timeouts | 起動来の累計（fetch を実行した回数・失敗数・タイムアウト数。認証エラーや bad_request、過負荷拒否は含まない） |
-| avg_elapsed_ms | fetch を実行したリクエストの平均処理時間（ミリ秒、起動来） |
-
-## セットアップ手順
-
-### 前提条件
-
-- macOS（ビルド環境）
-- Android Studio + Android SDK（API 26 以上）
-- Go 1.21+（cloudflared ビルド用）
-- Android NDK r27+（cloudflared クロスコンパイル用）
-- 実機またはエミュレータ（ARM64）
-- Cloudflare アカウント（無料プランで可）
-
-### 1. リポジトリのクローン
+サーバーとプール状態を返す（ヘルスチェック用、Bearer 認証）。
 
 ```bash
-git clone https://github.com/salesnow-cs/sn-bridge-android.git
-cd sn-bridge-android
+curl https://<tunnel-domain>/status -H "Authorization: Bearer <API_KEY>"
 ```
 
-### 2. Android SDK / NDK のインストール
+### `POST /update-check`
 
-Android Studio がインストール済みであれば SDK は自動的に配置される。
-NDK は以下で追加インストール:
+Portal の「全端点に通知」から呼ばれる。Portal manifest の取得 → SHA-256 検証 → 自己更新を
+fire-and-forget で起動する（Bearer 認証）。
+
+### `GET /stats?period=daily&limit=30`
+
+日次・月次の集計データを返す（管理 UI 用）。
+
+## 運用フロー（標準）
+
+```
+main push
+  → GitHub Actions が APK を自動ビルド（cloudflared 公式バイナリ + debug 署名）
+  → Portal の bridge_app_releases に is_published=false で投入
+  → Portal /admin/bridge-monitor → リリースタブで動作確認後、公開トグル ON
+  → 「全端点に『更新を確認』を送信」 or 各端末の自動チェック（1 時間毎）
+  → 各端末が manifest 取得 → SHA-256 検証 → PackageInstaller で自己更新
+```
+
+`applicationId` と署名 keystore は固定なので、端末の SharedPreferences（Tunnel Token・
+ログ・統計）はすべて保持される。**新リリース配布で端末側の再設定は不要**。
+
+詳細手順: [docs/ci-release-setup.md](docs/ci-release-setup.md)
+
+## 新端末の追加手順
+
+新しい Android 端末を bridgeN として運用に加えるときの最小手順。
+
+### 1. Cloudflare Tunnel の作成
+
+[Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels**
+
+1. **Create a tunnel** → **Cloudflared** → トンネル名（例: `bridge4`）→ **Save tunnel**
+2. 表示されたトークン（`eyJ...`）をコピー
+3. **Public Hostnames** → **Add a public hostname**
+   - **Subdomain**: `bridge4`（任意）
+   - **Domain**: `salesnow-cs.jp`
+   - **Type**: HTTP / **URL**: `localhost:3000`
+4. **Save hostname** → 数秒で `https://bridge4.salesnow-cs.jp` が有効になる
+
+DNS の CNAME レコードは自動作成される。CLI（`cloudflared tunnel create`）で
+作成したトンネルは Public Hostname を設定できないので、必ずダッシュボード経由で作成すること。
+
+### 2. APK のインストール
+
+CI 最新ビルドの APK を GitHub Actions の artifact から取得して USB install する。
 
 ```bash
-# SDK Manager で NDK をインストール
-sdkmanager "ndk;27.0.12077973"
+# 最新の成功 run ID を取得
+RUN_ID=$(gh run list -R osamu-araki/sn-bridge-android \
+  --workflow release-apk.yml --status success --limit 1 \
+  --json databaseId --jq '.[0].databaseId')
+
+# artifact をダウンロード
+gh run download "$RUN_ID" -R osamu-araki/sn-bridge-android --dir /tmp/sn-bridge
+
+# install
+adb install -r /tmp/sn-bridge/*/app-debug.apk
 ```
 
-### 3. cloudflared バイナリのビルド
+> **重要**: CI ビルドは `debug.keystore` を GitHub Secrets から復元して署名している。
+> ローカルで `./gradlew assembleDebug` した APK と同じ署名なので、既存端末の上書きや
+> ローカルビルドと CI ビルドの混在運用が可能。
 
-Android の非 root 環境では Go のネイティブ DNS リゾルバが動作しないため、
-`CGO_ENABLED=1` でビルドして Android のシステム DNS を使わせる必要がある。
+### 3. 端末側の設定
 
-```bash
-# Go のインストール（未インストールの場合）
-brew install go
+アプリを起動して以下を設定：
 
-# cloudflared ソースの取得
-cd /tmp
-git clone --depth 1 --branch 2026.2.0 https://github.com/cloudflare/cloudflared.git cloudflared-src
+| 項目 | 値 | 備考 |
+|---|---|---|
+| Port | 3000 | デフォルトのまま |
+| API Key | 任意の文字列 | n8n などから呼ぶときの Bearer |
+| Tunnel Token | 手順 1-2 のトークン | 端末ごとに固有 |
+| Tunnel Domain | `bridge4.salesnow-cs.jp` | 表示用 |
+| Portal Manifest URL | 空欄でよい | BuildConfig 既定値を使用 |
+| Check Token | 空欄でよい | BuildConfig 既定値を使用 |
+| 自動チェック | ON のまま | 1 時間毎に Portal を polling |
 
-# Android ARM64 向けにクロスコンパイル
-export NDK_ROOT="$HOME/Library/Android/sdk/ndk/27.0.12077973"
-export CC="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
-export CXX="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang++"
+「設定を保存」→ サーバー・Tunnel が自動で起動する。
 
-cd /tmp/cloudflared-src
-CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$CC CXX=$CXX \
-  go build -o /tmp/cloudflared-android -ldflags="-s -w" ./cmd/cloudflared
+### 4. Portal への端点登録
 
-# プロジェクトに配置
-mkdir -p <project>/app/src/main/jniLibs/arm64-v8a/
-cp /tmp/cloudflared-android <project>/app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-```
+salesnow_admin で `/admin/bridge-monitor` → 設定タブ → **Bridge 端点** → 端点追加：
 
-> **重要**: `CGO_ENABLED=0`（デフォルト）でビルドすると、Go の純粋 DNS リゾルバが
-> `/etc/resolv.conf` を参照するが、Android には存在しないため DNS 解決に失敗する。
-> `CGO_ENABLED=1` + NDK clang で動的リンクすると `getaddrinfo()` 経由で Android の
-> システム DNS が使われる。
+- **Name**: `bridge4`
+- **URL**: `https://bridge4.salesnow-cs.jp`
+- **API Key**: 手順 3 で設定したものと同じ
+- **Active**: ON
 
-### 4. APK のビルド
+これで監視対象 + OTA 配信対象に加わる。
 
-```bash
-cd sn-bridge-android
-./gradlew assembleDebug
-```
+### 5. 長期稼働のための省電力対策（必須）
 
-出力先: `app/build/outputs/apk/debug/app-debug.apk`
-
-### 5. 実機へのインストール
-
-```bash
-# USB デバッグを有効にした端末を接続
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-### 6. Cloudflare Tunnel の作成
-
-Cloudflare Zero Trust ダッシュボードからトンネルを作成する。
-ダッシュボードから作成したトンネルはトークン方式で管理され、アプリにトークンを入力するだけで接続できる。
-
-#### 6-1. トンネルの作成
-
-1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) にログイン
-2. **Networks** → **Connectors** → **Create a tunnel**
-3. **Cloudflared** を選択 → **Next**
-4. トンネル名を入力（例: `chrome-bridge`）→ **Save tunnel**
-5. トークン（`eyJ...` 形式の文字列）が表示されるのでコピーしておく → **Next**
-
-#### 6-2. Public Hostname の設定
-
-トンネル作成の続きで、または既存トンネルの Configure → Public Hostname タブで設定する。
-
-1. **Add a public hostname** をクリック
-2. 以下を入力:
-   - **Subdomain**: 任意（例: `bridge`）
-   - **Domain**: Cloudflare で管理しているドメインを選択
-   - **Type**: `HTTP`
-   - **URL**: `localhost:3000`
-3. **Save hostname**
-
-これにより `https://<subdomain>.<domain>` へのリクエストがアプリの HTTP サーバーに転送される。
-
-> **補足**: CLI（`cloudflared tunnel create`）で作成したトンネルは「ローカル管理型」となり、
-> ダッシュボードから Public Hostname を設定できない。アプリのトークン方式で利用するには
-> ダッシュボードから作成することを推奨する。
-
-#### 6-3. DNS レコードの確認
-
-Public Hostname を設定すると、Cloudflare DNS に CNAME レコードが自動作成される。
-手動で確認・修正する場合:
-
-1. Cloudflare ダッシュボード（メインサイト）→ 対象ドメイン → **DNS** → **Records**
-2. Tunnel タイプのレコードが作成されていることを確認
-3. Content が正しいトンネル名を指していることを確認
-
-### 7. アプリの設定
-
-1. アプリを起動するとサーバーが自動起動する
-2. **Port**: デフォルト 3000（必要に応じて変更）
-3. **API Key**: 任意の文字列を設定（外部アクセス時の認証に使用）
-4. **Tunnel Token**: 手順 6-1 で取得したトークンを入力
-5. **Tunnel Domain**: Tunnel に紐づくドメイン名を入力（表示用）
-6. 「接続」ボタンで Tunnel を開始
-
-### 8. 動作確認
-
-```bash
-# ローカル（同一ネットワーク内）
-curl http://<Android IP>:3000/status
-
-# Tunnel 経由
-curl https://<tunnel-domain>/status
-
-# ページ取得テスト
-curl -X POST https://<tunnel-domain>/fetch \
-  -H "Authorization: Bearer <API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com","mode":"text"}'
-```
+[長期稼働のための設定（必須）](#長期稼働のための設定必須) を参照。
 
 ## バックグラウンド動作
 
@@ -292,7 +170,7 @@ curl -X POST https://<tunnel-domain>/fetch \
 ## 長期稼働のための設定（必須）
 
 Android OS とメーカー独自の省電力機構によって、Foreground Service ですら強制停止される
-ことがある。長時間（夜間越し等）安定稼働させるには **3段階の許可**を行う必要がある。
+ことがある。長時間（夜間越し等）安定稼働させるには **3 段階の許可** を行う必要がある。
 
 すべてアプリ内の「設定 → 省電力対策」セクションから誘導できる。
 
@@ -317,15 +195,22 @@ SalesNow Bridge を**明示的に許可**する必要がある。
 | Vivo | i マネージャー → アプリマネージャー → 自動起動 |
 | Samsung | 設定 → 電池 → バッテリー使用量 → 制限なし |
 
-### 3. 最近使ったアプリでロック（推奨）
+### 3. 「不明な提供元のインストール」許可（OTA 必須）
+
+アプリ自体が新バージョンを install できるようにするため必要。
+設定タブの「アップデート」セクション → 「許可設定」ボタンから誘導される。
+
+OS の許可がないと OTA は事前チェックで停止し、ユーザー操作を待つ通知が出る。
+
+### 4. 最近使ったアプリでロック（推奨）
 
 タスクリスト（最近使ったアプリ）から SalesNow Bridge を「ロック」状態にする
 （メーカー UI により名称異なる、長押し → 鍵アイコン等）。これでユーザー誤操作・
 端末メモリ整理時の停止を防げる。
 
-> **重要**: 上記いずれかが欠けると、夜間にプロセスが殺されて翌朝まで停止し続ける
-> 事象が発生する。3台運用であれば**外部からのヘルスチェック + 通知**もあわせて
-> 設定することを強く推奨する。
+> **重要**: 上記 1, 2, 3 のいずれかが欠けると、夜間にプロセスが殺されて翌朝まで
+> 停止し続ける / OTA が止まる事象が発生する。社内 3 台運用では Portal の
+> ヘルスチェック + Slack 通知も併用すること（[Portal /admin/bridge-monitor](https://cs.salesnow.jp/admin/bridge-monitor) 設定タブ）。
 
 ## 技術詳細
 
@@ -335,31 +220,105 @@ SalesNow Bridge を**明示的に許可**する必要がある。
 | ターゲット API | 35 |
 | HTTP サーバー | NanoHTTPd 2.3.1 |
 | ページ取得 | Android WebView + evaluateJavascript |
-| Tunnel | cloudflared (CGO_ENABLED=1 ビルド) |
+| Tunnel | cloudflared 公式 Linux ARM64 (CI で取得) |
+| Tunnel 接続 | QUIC + `--edge` 固定 IP（DNS 不要） |
 | UI | Jetpack Compose + Material 3 |
-| レート制限 | 20 req/min per IP |
-| キュー上限 | 10 件 |
+| OTA | PackageInstaller + SHA-256 検証 |
+| 署名 | debug keystore（CI が Secrets から復元） |
+
+### Tunnel の DNS 経路
+
+Android では `/etc/resolv.conf` が無く、cloudflared が DNS lookup に
+`[::1]:53` へフォールバックする。port 53 は privileged port なので一部 OS
+（OPPO Android 9 等）では DnsProxy の bind が EACCES で失敗する。
+
+これを回避するため、起動時に cloudflared へ `--edge IP:7844` を 6 個複数回指定して
+edge discovery（DNS lookup）を bypass する経路に統一している。
+詳細: [TunnelManager.kt](app/src/main/java/jp/salesnow/chromebridge/tunnel/TunnelManager.kt)
+の `DEFAULT_CLOUDFLARED_EDGE_IPS`。
+
+Cloudflare 側で edge IP 帯が変更された場合は `SettingsRepository.cloudflaredEdgeIps`
+（ChromeBridge アプリ設定の pref キー）で上書き可能。
 
 ## ファイル構成
 
 ```
 app/src/main/java/jp/salesnow/chromebridge/
 ├── MainActivity.kt                    # エントリーポイント
+├── ChromeBridgeApp.kt                 # Application（クラッシュハンドラ等）
+├── BootReceiver.kt                    # 端末再起動後の自動起動
+├── ChallengeActivity.kt               # Cloudflare 認証画面手動解除
 ├── ui/
 │   ├── MainScreen.kt                  # Compose UI
+│   ├── SettingsTab.kt                 # 設定画面
 │   └── theme/Theme.kt                 # SalesNow ブランドカラー
 ├── server/
 │   ├── BridgeHttpServer.kt            # NanoHTTPd サーバー
 │   ├── AuthMiddleware.kt              # Bearer Token 認証
+│   ├── UrlPolicy.kt                   # SSRF 防御
 │   └── RateLimiter.kt                 # レート制限
 ├── fetcher/
-│   ├── HeadlessWebViewFetcher.kt      # WebView ページ取得
-│   └── JsExtractors.kt               # extractText/extractDom JS
+│   ├── WebViewPool.kt                 # WebView プール（並列処理）
+│   └── ChallengeManager.kt            # Cloudflare チャレンジ検知
 ├── service/
 │   └── BridgeForegroundService.kt     # Foreground Service
 ├── tunnel/
 │   ├── TunnelManager.kt               # cloudflared プロセス管理
-│   └── DnsProxy.kt                    # DNS プロキシ（エミュレータ用）
+│   └── DnsProxy.kt                    # DNS プロキシ（IPv4/IPv6）
+├── update/
+│   ├── UpdateChecker.kt               # OTA: manifest → DL → install
+│   └── PackageInstallerReceiver.kt    # install 結果コールバック
 └── data/
-    └── SettingsRepository.kt           # SharedPreferences 管理
+    ├── SettingsRepository.kt          # SharedPreferences 管理
+    ├── StatsDatabase.kt               # 統計 DB
+    └── LogFileWriter.kt               # ログファイル管理
 ```
+
+> Kotlin パッケージ名と applicationId は `jp.salesnow.chromebridge` のまま保持している
+> （変更すると既存 3 台が別アプリ扱いになり Tunnel Token 含む設定が消えるため）。
+> UI 表示名のみ「SalesNow Bridge」に統一済。
+
+## ローカルでのビルド（補足）
+
+通常運用は CI 経由なので不要。手元で APK を作って install したいとき向け。
+
+### 前提
+
+- Android Studio + Android SDK（API 26 以上）
+- ローカルの `~/.android/debug.keystore`（CI と同じ署名を保つため、自動生成される
+  もので OK。初回 build 時に Android Studio が作る）
+
+### ビルド
+
+```bash
+git clone https://github.com/osamu-araki/sn-bridge-android.git
+cd sn-bridge-android
+
+# cloudflared バイナリは CI が download している。ローカル build では
+# 公式 Linux ARM64 を一度配置すれば以後 .gitignore で追跡されない。
+mkdir -p app/src/main/jniLibs/arm64-v8a
+curl -fsSL -o app/src/main/jniLibs/arm64-v8a/libcloudflared.so \
+  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
+
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+### versionCode / versionName / OTA token の上書き
+
+```bash
+BRIDGE_APP_CHECK_TOKEN_BUILD="<Portal の bridge_app_check_token と同値>" \
+VERSION_CODE_OVERRIDE=701 \
+VERSION_NAME_OVERRIDE=1.2.7-dev \
+./gradlew assembleDebug
+```
+
+env を省略すると `versionCode=3 / versionName=1.2.0 / Check Token=空` でビルドされる。
+手元 dev 版を端末に入れた場合、versionCode を CI の連番（`<github.run_number>00`）と
+被らない値にしておくこと（被ると OTA が「最新です」と判定して更新を取らない）。
+
+## 参考
+
+- [docs/ci-release-setup.md](docs/ci-release-setup.md) — CI / GitHub Secrets / OTA セットアップ
+- [docs/android-overview.html](docs/android-overview.html) — Android 実装の構造図
+- [docs/requirements-and-design.html](docs/requirements-and-design.html) — 初版設計ドキュメント
