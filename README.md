@@ -96,18 +96,40 @@ main push
 
 ### 1. Cloudflare Tunnel の作成
 
+#### 1-A. ダッシュボード経由（推奨）
+
 [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels**
 
-1. **Create a tunnel** → **Cloudflared** → トンネル名（例: `bridge4`）→ **Save tunnel**
+1. **Create a tunnel** → **Cloudflared** → トンネル名（例: `chrome-bridge-N`）→ **Save tunnel**
 2. 表示されたトークン（`eyJ...`）をコピー
 3. **Public Hostnames** → **Add a public hostname**
-   - **Subdomain**: `bridge4`（任意）
+   - **Subdomain**: `bridgeN`（任意）
    - **Domain**: `salesnow-cs.jp`
    - **Type**: HTTP / **URL**: `localhost:3000`
-4. **Save hostname** → 数秒で `https://bridge4.salesnow-cs.jp` が有効になる
+4. **Save hostname** → 数秒で `https://bridgeN.salesnow-cs.jp` が有効になる
 
-DNS の CNAME レコードは自動作成される。CLI（`cloudflared tunnel create`）で
-作成したトンネルは Public Hostname を設定できないので、必ずダッシュボード経由で作成すること。
+DNS の CNAME レコードは自動作成される。Android アプリ側は config.yml を自前生成して
+ingress を流すので、ダッシュボードの Public Hostname は端末ローカルの ingress と二重定義になる
+（実害なし、可視性のためダッシュボード側にも入れておく運用）。
+
+#### 1-B. CLI 経由（ダッシュボードが使えないとき）
+
+```bash
+# 作成（既存ローカル credentials 経由）
+cloudflared tunnel create chrome-bridge-N
+# → "Created tunnel chrome-bridge-N with id <UUID>" が出るので <UUID> を控える
+
+# DNS バインド（重要: --overwrite-dns を必ず付け、tunnel-name でなく UUID で指定する）
+#   tunnel-name 指定だと過去の別 tunnel に上書きする挙動を確認しており、
+#   --overwrite-dns + UUID 指定のみが確実
+cloudflared tunnel route dns --overwrite-dns <UUID> bridgeN.salesnow-cs.jp
+
+# Android アプリ用の token を取得（端末設定に投入）
+cloudflared tunnel token chrome-bridge-N
+```
+
+CLI 経由でも Android アプリは `--token` で起動するので Public Hostname の設定は不要
+（ingress はアプリが自前生成）。
 
 ### 2. APK のインストール
 
@@ -130,6 +152,11 @@ adb install -r /tmp/sn-bridge/*/app-debug.apk
 > ローカルで `./gradlew assembleDebug` した APK と同じ署名なので、既存端末の上書きや
 > ローカルビルドと CI ビルドの混在運用が可能。
 
+> **OPPO ColorOS の罠**: `adb install` が `Performing Streamed Install` で
+> 数分以上ハングする場合は、開発者オプションの **「USB 経由でインストールを許可」**（端末によっては
+> `Install via USB` / `USB デバッグ（セキュリティ設定）`）が OFF。これを ON にすると即時に成功する。
+> エラーメッセージなしでハングするので気づきにくい。
+
 ### 3. 端末側の設定
 
 アプリを起動して以下を設定：
@@ -137,29 +164,113 @@ adb install -r /tmp/sn-bridge/*/app-debug.apk
 | 項目 | 値 | 備考 |
 |---|---|---|
 | Port | 3000 | デフォルトのまま |
-| API Key | 任意の文字列 | n8n などから呼ぶときの Bearer |
-| Tunnel Token | 手順 1-2 のトークン | 端末ごとに固有 |
-| Tunnel Domain | `bridge4.salesnow-cs.jp` | 表示用 |
+| API Key | 任意の文字列（推奨: `openssl rand -hex 32`） | n8n などから呼ぶときの Bearer |
+| Tunnel Token | 手順 1 のトークン | 端末ごとに固有 |
+| Tunnel Domain | `bridgeN.salesnow-cs.jp` | 表示用 |
 | Portal Manifest URL | 空欄でよい | BuildConfig 既定値を使用 |
 | Check Token | 空欄でよい | BuildConfig 既定値を使用 |
 | 自動チェック | ON のまま | 1 時間毎に Portal を polling |
 
-「設定を保存」→ サーバー・Tunnel が自動で起動する。
+「Tunnel 設定を保存」→「設定を保存」→ サーバー再起動ダイアログで「再起動する」を選ぶと
+サーバー・Tunnel が自動で起動する。
+
+> **OPPO ColorOS の IME 干渉**: 日本語 IME 環境で `adb shell input text` を使うと
+> 英数の一部が日本語にオートコンバートされ、Tunnel Token / API Key が壊れて入る
+> （例: `"eyJ..."` が `"えyJひじょいZDY..."` になる）。
+>
+> 回避策（debug ビルドで `run-as` が使える前提）:
+> ```bash
+> # XML を手元で組み立てて push する
+> # （tunnel_token / api_key をシェル変数に保持して値はチャットや log に残さない）
+> adb push prefs.xml /sdcard/Download/x.xml
+> adb shell run-as jp.salesnow.chromebridge cp /sdcard/Download/x.xml \
+>   shared_prefs/chrome_bridge_settings.xml
+> adb shell rm /sdcard/Download/x.xml
+> ```
+> もしくは **物理 BT キーボードか英語 IME** に切り替えてから手動入力。
 
 ### 4. Portal への端点登録
 
 salesnow_admin で `/admin/bridge-monitor` → 設定タブ → **Bridge 端点** → 端点追加：
 
-- **Name**: `bridge4`
-- **URL**: `https://bridge4.salesnow-cs.jp`
+- **Name**: `bridgeN`
+- **Display Name**: `端末X (モデル / Android バージョン)`
+- **URL**: `https://bridgeN.salesnow-cs.jp`
 - **API Key**: 手順 3 で設定したものと同じ
 - **Active**: ON
+- **Dispatch Role / Priority**: 既存運用に合わせる（`primary` / `secondary` / `last_resort`）
 
 これで監視対象 + OTA 配信対象に加わる。
 
-### 5. 長期稼働のための省電力対策（必須）
+### 5. 動作確認（外部から /status を叩く）
+
+```bash
+API_KEY=$(... Portal の bridge_endpoints から SELECT した値 ...)
+curl -fsSL https://bridgeN.salesnow-cs.jp/status -H "Authorization: Bearer $API_KEY"
+# → 200 + {"webview_ready":true, ...} が返れば成功
+```
+
+### 6. 長期稼働のための省電力対策（必須）
 
 [長期稼働のための設定（必須）](#長期稼働のための設定必須) を参照。
+
+## 現状の運用端末
+
+| 端点名 | モデル | Android | Tunnel ID | 役割 |
+|---|---|---|---|---|
+| bridge1 | KYOCERA A302OP | 14 | `chrome-bridge` | last_resort (priority 3) |
+| bridge2 | OPPO CPH1983 | 9 | `chrome-bridge-2` | secondary (priority 2) |
+| bridge3 | Lenovo P780 | 11 | `chrome-bridge-3` | primary (priority 1) |
+| bridge4 | OPPO CPH1983 | 9 | `chrome-bridge-4` | secondary (priority 2) |
+
+ドメインはすべて `bridgeN.salesnow-cs.jp` 形式。Portal 側の `bridge_endpoints` テーブルが
+ソース・オブ・トゥルース。
+
+## トラブルシューティング
+
+### `adb install` が `Performing Streamed Install` で固まる（OPPO 系）
+
+開発者オプションの **「USB 経由でインストールを許可」** が OFF。ON にして再実行。
+エラーメッセージなしでハングするので OPPO ColorOS では必ず最初にチェック。
+
+### `adb shell input text` で英数が日本語に化ける（OPPO 系の日本語 IME）
+
+オートコンバート干渉。`run-as` で `shared_prefs/chrome_bridge_settings.xml` を直接
+書き換えるか、英語 IME / 物理キーボードに切り替える。
+[手順 3 の注意書き](#3-端末側の設定) 参照。
+
+### `adb logcat` に `ChromeBridge` タグのログが流れない（OPPO 系）
+
+ColorOS のログフィルタで debug log が抑制されている。アプリ内蔵の `LogFileWriter` が
+`files/logs/system.log` に書いているのでそちらを参照：
+
+```bash
+adb shell run-as jp.salesnow.chromebridge cat files/logs/system.log
+```
+
+### cloudflared が exit code 255 で即時死亡を繰り返す
+
+ChromeBridge ログに「Tunnel プロセス終了 (exit code: 255)」だけが並び、cloudflared 側の
+詳細出力が一切ない場合、起動前にバイナリが死亡している。今までに観測している原因と対策：
+
+1. **何度も install / 設定し直して状態が壊れた** — `adb uninstall jp.salesnow.chromebridge`
+   → 再 install → 設定再投入で復活する（SELinux context / プロセス状態のリセット効果）。
+2. **同じ Tunnel Token で複数クライアントが同時接続** — Mac で `cloudflared tunnel run --token`
+   を試した直後だと、Cloudflare 側に古い connector が残って初期化に失敗することがある。
+   数十秒～数分待ってから端末側を再起動。
+3. **30 分 cooldown が走っている** — 1.2.10 以降は 5 回連続失敗で 30 分待機する設計なので
+   即時試したいときは `am force-stop` + 再起動で cooldown をスキップできる
+   （Service の `start()` 冒頭で世代を進めて pending thread を stale 化する仕様）。
+
+### `cloudflared tunnel route dns <name> <hostname>` が違う tunnel に紐付く
+
+cloudflared 2026.x の挙動として、同一アカウント内で過去に DNS バインド済みの hostname を
+使うと、tunnel 名指定でも別 tunnel に紐付くケースを確認している。**必ず UUID を指定 +
+`--overwrite-dns` を付ける**：
+
+```bash
+cloudflared tunnel route dns --overwrite-dns <新 tunnel UUID> bridgeN.salesnow-cs.jp
+```
 
 ## バックグラウンド動作
 
