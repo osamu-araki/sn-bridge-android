@@ -1,4 +1,5 @@
-// Version: 1.8.0 | Updated: 2026-05-18
+// Version: 1.9.0 | Updated: 2026-06-20
+// [2026-06-20] FetchRequest.userAgent を doFetch 内で WebView.settings に適用、リクエスト毎の UA 上書きをサポート
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
 // [2026-03-13] メインスレッドデッドロック修正、SSL エラーハンドリング追加
 // [2026-03-13] Cookie 永続化: CookieManager でディスク保存、reCAPTCHA 対策
@@ -54,6 +55,11 @@ class WebViewPool(
     // [2026-05-18] レンダラがクラッシュした WebView を記録するセット
     private val deadInstances: MutableSet<WebView> =
         java.util.Collections.newSetFromMap(ConcurrentHashMap<WebView, Boolean>())
+    // [2026-06-20] createWebView 時に決まる「リクエスト UA 未指定時のフォールバック値」。
+    //   各 WebView は createWebView で同じ式から導出されるので 1 個保持で十分。
+    //   doFetch 開始時に必ずこの値か request.userAgent のどちらかで明示的に設定し直すので、
+    //   前回 override の影響が残らない。
+    @Volatile private var defaultUserAgent: String = ""
     // [2026-05-18] maybeReplenish の多重実行ガード
     private val replenishing = AtomicBoolean(false)
     // [2026-05-18] destroy 後の release / replace / replenish を無効化するフラグ
@@ -99,6 +105,8 @@ class WebViewPool(
             settings.userAgentString = settings.userAgentString
                 .replace("; wv", "")
                 .replace("Version/\\d+\\.\\d+".toRegex(), "")
+            // [2026-06-20] リクエスト UA 未指定時に毎回戻すための初期値を記録（最初の 1 個で十分、全 WebView 同じ値）
+            if (defaultUserAgent.isEmpty()) defaultUserAgent = settings.userAgentString
         }
     }
 
@@ -281,6 +289,10 @@ class WebViewPool(
                     return true
                 }
             }
+            // [2026-06-20] リクエスト毎の User-Agent を適用。null/空文字なら createWebView 時の
+            //   デフォルトに戻す（前回 override の影響を消す）。loadUrl の直前に必ず実行。
+            val requestedUa = request.userAgent?.takeIf { it.isNotBlank() }
+            wv.settings.userAgentString = requestedUa ?: defaultUserAgent
             wv.loadUrl(request.url)
         }
 

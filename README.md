@@ -41,6 +41,7 @@ curl -X POST https://<tunnel-domain>/fetch \
 | wait | int | いいえ | 3 | ページ読み込み後の待機秒数 |
 | max_length | int | いいえ | 50000 | テキストの最大文字数 |
 | timeout | int | いいえ | 30 | タイムアウト秒数 |
+| user_agent | string | いいえ | (WebView 既定) | リクエスト毎の User-Agent 上書き。null / 空文字なら WebView デフォルト（Chrome 互換）に戻る。1024 文字以内、制御文字（CR/LF 等）不可 |
 
 **レスポンス例（text モード）:**
 

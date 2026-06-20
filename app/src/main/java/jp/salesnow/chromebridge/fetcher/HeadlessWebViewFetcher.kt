@@ -18,7 +18,9 @@ data class FetchRequest(
     val wait: Int = 3,
     val maxLength: Int = 50000,
     val timeout: Int = 30,
-    val mode: String = "text"
+    val mode: String = "text",
+    // [2026-06-20] リクエスト毎の User-Agent 上書き。null/空文字なら WebView デフォルト UA を使う。
+    val userAgent: String? = null,
 )
 
 data class FetchResult(

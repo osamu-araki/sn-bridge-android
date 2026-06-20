@@ -66,6 +66,8 @@ class BridgeHttpServer(
         const val MAX_REQUEST_BODY_BYTES = 256 * 1024  // 256 KB
         const val MAX_MAX_LENGTH = 5 * 1024 * 1024     // 5 MB（text 取得の最大）
         const val MAX_TIMEOUT_HARD_LIMIT = 300         // 5 分（maxTimeout 設定の上限ガード）
+        // [2026-06-20] user_agent 文字列の上限。一般的な UA は 200 文字以下。
+        const val MAX_USER_AGENT_LEN = 1024
     }
 
     // [2026-03-12] スレッドプール制限: 無制限スレッド生成を防止
@@ -161,12 +163,17 @@ class BridgeHttpServer(
         val requestedWait: Int
         val maxLength: Int
         val requestedTimeout: Int
+        // [2026-06-20] user_agent: リクエスト毎の WebView User-Agent 上書き（null/空文字なら WebView デフォルト）
+        val userAgent: String?
         try {
             url = json.get("url")?.asString
             mode = json.get("mode")?.asString
             requestedWait = json.get("wait")?.asInt ?: 3
             maxLength = json.get("max_length")?.asInt ?: 50000
             requestedTimeout = json.get("timeout")?.asInt ?: 30
+            // [2026-06-20] `"user_agent": null` を仕様どおり「指定なし」として扱う（JsonNull.asString が
+            //   例外を投げて 400 になる Codex 指摘への対応）。
+            userAgent = json.get("user_agent")?.takeUnless { it.isJsonNull }?.asString
         } catch (e: Exception) {
             return errorResponse(
                 Status.BAD_REQUEST, "bad_request",
@@ -232,6 +239,24 @@ class BridgeHttpServer(
                 retryable = false, category = "client"
             )
         }
+        // [2026-06-20] user_agent のバリデーション: 長さ上限 + HTTP ヘッダ汚染になる制御文字を拒否
+        if (userAgent != null) {
+            if (userAgent.length > MAX_USER_AGENT_LEN) {
+                return errorResponse(
+                    Status.BAD_REQUEST, "bad_request",
+                    "user_agent は ${MAX_USER_AGENT_LEN} 文字以内で指定してください",
+                    retryable = false, category = "client"
+                )
+            }
+            // [2026-06-20] HTTP ヘッダ汚染対策。RFC 的な制御文字（0x00-0x1F + 0x7F DEL）を一切拒否。
+            if (userAgent.any { it.code < 0x20 || it.code == 0x7F }) {
+                return errorResponse(
+                    Status.BAD_REQUEST, "bad_request",
+                    "user_agent に制御文字（CR/LF/DEL 等）を含めることはできません",
+                    retryable = false, category = "client"
+                )
+            }
+        }
 
         val fetchMode = mode ?: "text"
 
@@ -253,7 +278,14 @@ class BridgeHttpServer(
         // [2026-05-18] メトリクス会計は finally で一度だけ行う（二重加算防止）
         var resultError: String? = null
         try {
-            val request = FetchRequest(url, effectiveWait, maxLength, effectiveTimeout, fetchMode)
+            val request = FetchRequest(
+                url = url,
+                wait = effectiveWait,
+                maxLength = maxLength,
+                timeout = effectiveTimeout,
+                mode = fetchMode,
+                userAgent = userAgent?.takeIf { it.isNotBlank() },
+            )
             val fetchResult = pool.fetch(request)
             val elapsed = System.currentTimeMillis() - startMs
 
