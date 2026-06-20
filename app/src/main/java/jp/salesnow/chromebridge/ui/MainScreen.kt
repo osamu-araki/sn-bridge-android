@@ -76,7 +76,10 @@ fun MainScreen(
     onSavePortalUpdateSettings: (url: String, token: String, auto: Boolean) -> Unit = { _, _, _ -> },
     onManualUpdateCheck: () -> Unit = {},
     currentVersionName: String = "",
-    currentVersionCode: Int = 0
+    currentVersionCode: Int = 0,
+    // [2026-06-20] 手動 update check 中のスピナー + 直近結果メッセージ
+    updateChecking: Boolean = false,
+    updateResultMessage: String? = null,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     // [2026-03-14] 3タブ構成
@@ -184,7 +187,9 @@ fun MainScreen(
                 onSavePortalUpdateSettings = onSavePortalUpdateSettings,
                 onManualUpdateCheck = onManualUpdateCheck,
                 currentVersionName = currentVersionName,
-                currentVersionCode = currentVersionCode
+                currentVersionCode = currentVersionCode,
+                updateChecking = updateChecking,
+                updateResultMessage = updateResultMessage
             )
         }
 

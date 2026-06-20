@@ -35,6 +35,7 @@ import jp.salesnow.chromebridge.server.BridgeHttpServer
 import jp.salesnow.chromebridge.server.RateLimiter
 import jp.salesnow.chromebridge.tunnel.TunnelManager
 import jp.salesnow.chromebridge.update.UpdateChecker
+import jp.salesnow.chromebridge.update.UpdateCheckResult
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -245,23 +246,47 @@ class BridgeForegroundService : Service() {
     // [2026-06-10] OTA: 多重実行防止（Codex#2）。Alarm/手動/HTTP の同時 trigger を 1 件に絞る。
     private val updateInProgress = AtomicBoolean(false)
 
+    /** 現在 OTA 更新チェックが走っているか（UI のスピナー表示に使う） */
+    val isUpdateChecking: Boolean get() = updateInProgress.get()
+
+    // [2026-06-20] 直近の OTA 結果を Service が保持。UI は polling で読み取り、Activity 回転後も状態を復元できる。
+    @Volatile private var lastUpdateResult: UpdateCheckResult? = null
+
+    /** 直近の OTA チェック結果。未実行なら null。 */
+    fun getLastUpdateResult(): UpdateCheckResult? = lastUpdateResult
+
+    /** 結果表示後に UI 側でクリア可能にする（次回 polling で再表示されないように） */
+    fun consumeLastUpdateResult(): UpdateCheckResult? {
+        val v = lastUpdateResult
+        lastUpdateResult = null
+        return v
+    }
+
     /** 別スレッドで manifest → DL → install を回す。手動 trigger / Alarm 共通。
      *  既に実行中なら skip し、戻り値で呼び出し側に伝える。
+     *  [2026-06-20] 結果を main thread に post する callback を受け取れる。UI の Toast / 状態表示用。
+     *    callback は applicationContext 配下で使うことを推奨（Activity 破棄後のリークを避ける）。
      */
-    fun runUpdateCheck(origin: String): Boolean {
+    fun runUpdateCheck(origin: String, onResult: ((UpdateCheckResult) -> Unit)? = null): Boolean {
         if (!updateInProgress.compareAndSet(false, true)) {
             addLog("OTA: 既に実行中のためスキップ ($origin)")
             return false
         }
         addLog("OTA: 更新チェック開始 ($origin)")
         Thread {
-            try {
+            val result = try {
                 val checker = UpdateChecker(applicationContext) { msg -> addLog(msg) }
                 checker.checkAndInstall()
             } catch (e: Exception) {
                 addLog("OTA: 例外 ${e.message}")
+                UpdateCheckResult.InstallError(e.message ?: e::class.java.simpleName)
             } finally {
-                updateInProgress.set(false)
+                lastUpdateResult = null  // 一度 null にして、UI ループが「同じ結果の再描画」と認識しないようにする
+            }
+            lastUpdateResult = result
+            updateInProgress.set(false)
+            if (onResult != null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(result) }
             }
         }.start()
         return true

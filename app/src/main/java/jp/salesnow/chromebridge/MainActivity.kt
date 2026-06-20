@@ -114,6 +114,10 @@ class MainActivity : ComponentActivity() {
                 var slackWebhookUrlState by remember { mutableStateOf(settings.slackWebhookUrl) }
                 var logAutoBackupState by remember { mutableStateOf(settings.logAutoBackup) }
 
+                // [2026-06-20] 手動 update check の UI 状態
+                var updateChecking by remember { mutableStateOf(false) }
+                var updateResultMessage by remember { mutableStateOf<String?>(null) }
+
                 // 1秒ごとに状態更新
                 LaunchedEffect(isBound) {
                     while (isActive && isBound) {
@@ -129,6 +133,14 @@ class MainActivity : ComponentActivity() {
                             )
                             systemLogs = svc.getSystemLogs()
                             httpLogs = svc.getHttpLogs()
+                            // [2026-06-20] OTA 状態を Service から polling して反映
+                            //   Activity 回転後も実行中状態 / 結果が UI に復元される
+                            updateChecking = svc.isUpdateChecking
+                            val pending = svc.getLastUpdateResult()
+                            if (pending != null) {
+                                updateResultMessage = pending.toUserMessage()
+                                svc.consumeLastUpdateResult()
+                            }
                         }
                         delay(1000)
                     }
@@ -283,18 +295,32 @@ class MainActivity : ComponentActivity() {
                         //   未付与のまま発火しても UpdateChecker 冒頭で早期 return されるため、
                         //   ボタンタップ時点で警告して設定への導線を促す。
                         if (!packageManager.canRequestPackageInstalls()) {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "「不明な提供元のインストール許可」が未付与です。設定タブ > アップデート > 「許可設定」から有効化してください。",
-                                Toast.LENGTH_LONG,
-                            ).show()
+                            val msg = "「不明な提供元のインストール許可」が未付与です。設定タブ > アップデート > 「許可設定」から有効化してください。"
+                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                            updateResultMessage = msg
                             return@MainScreen
                         }
-                        val intent = Intent(this@MainActivity, BridgeForegroundService::class.java).apply {
-                            action = BridgeForegroundService.ACTION_CHECK_UPDATE
+                        val svc = serviceBinder
+                        if (svc == null) {
+                            val msg = "サーバーが起動していないためアップデートを実行できません"
+                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                            updateResultMessage = msg
+                            return@MainScreen
                         }
-                        startService(intent)
-                        Toast.makeText(this@MainActivity, "更新を確認しています…", Toast.LENGTH_SHORT).show()
+                        updateChecking = true
+                        updateResultMessage = null
+                        // [2026-06-20] Toast は applicationContext で出して Activity 破棄後のリークを避ける
+                        val appCtx = applicationContext
+                        val started = svc.runUpdateCheck("ui") { result ->
+                            Toast.makeText(appCtx, result.toUserMessage(), Toast.LENGTH_LONG).show()
+                            // updateChecking / updateResultMessage の UI 反映は polling ループに任せる
+                        }
+                        if (!started) {
+                            // 既に実行中だった場合（polling で状態は復元されるので Toast だけ）
+                            Toast.makeText(this@MainActivity, "更新チェックは既に実行中です", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "更新を確認しています…", Toast.LENGTH_SHORT).show()
+                        }
                     },
                     currentVersionName = run {
                         try {
@@ -310,7 +336,10 @@ class MainActivity : ComponentActivity() {
                                 @Suppress("DEPRECATION") info.versionCode
                             }
                         } catch (_: Exception) { 0 }
-                    }
+                    },
+                    // [2026-06-20] 手動 update check 中のスピナー + 直近結果メッセージ
+                    updateChecking = updateChecking,
+                    updateResultMessage = updateResultMessage,
                 )
             }
         }

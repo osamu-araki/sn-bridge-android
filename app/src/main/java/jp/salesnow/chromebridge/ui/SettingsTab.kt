@@ -11,10 +11,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -74,7 +76,11 @@ fun SettingsTab(
     onSavePortalUpdateSettings: (url: String, token: String, auto: Boolean) -> Unit = { _, _, _ -> },
     onManualUpdateCheck: () -> Unit = {},
     currentVersionName: String = "",
-    currentVersionCode: Int = 0
+    currentVersionCode: Int = 0,
+    // [2026-06-20] 手動 update check の状態（true なら実行中、ボタン disable + スピナー表示）
+    updateChecking: Boolean = false,
+    // [2026-06-20] 直近の update check 結果メッセージ（null なら未実行）
+    updateResultMessage: String? = null,
 ) {
     var portInput by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKeyInput by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
@@ -300,11 +306,23 @@ fun SettingsTab(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // [2026-06-20] 確認中はボタン disable + 円形スピナー表示
                         OutlinedButton(
                             onClick = { onManualUpdateCheck() },
+                            enabled = !updateChecking,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("今すぐ確認")
+                            if (updateChecking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Teal,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("確認中…")
+                            } else {
+                                Text("今すぐ確認")
+                            }
                         }
                         Button(
                             onClick = {
@@ -319,6 +337,19 @@ fun SettingsTab(
                         ) {
                             Text("設定を保存")
                         }
+                    }
+                    // [2026-06-20] 直近の update check 結果を表示
+                    if (updateResultMessage != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            updateResultMessage,
+                            fontSize = 12.sp,
+                            color = NavyDark,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFF1F5F7), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                        )
                     }
                 }
             }
