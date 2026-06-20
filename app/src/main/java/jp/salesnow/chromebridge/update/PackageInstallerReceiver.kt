@@ -1,4 +1,6 @@
-// Version: 1.0.0 | Updated: 2026-06-10
+// Version: 1.1.0 | Updated: 2026-06-20
+// [2026-06-20] STATUS_SUCCESS で Service を明示起動する処理を追加。OEM 別の挙動で OS が
+//   自動再起動してくれないケース（OPPO ColorOS / Lenovo 等で観測）の保険。
 // [2026-06-10] PackageInstaller の commit() コールバック受信。失敗時のみ通知でログ。
 package jp.salesnow.chromebridge.update
 
@@ -7,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import jp.salesnow.chromebridge.service.BridgeForegroundService
 
@@ -33,8 +36,22 @@ class PackageInstallerReceiver : BroadcastReceiver() {
                 }
             }
             PackageInstaller.STATUS_SUCCESS -> {
-                android.util.Log.i("ChromeBridge.OTA", "インストール成功")
-                // 成功時は新バイナリで自動再起動されるため通知不要
+                android.util.Log.i("ChromeBridge.OTA", "インストール成功 → BridgeForegroundService を明示起動")
+                // [2026-06-20] OPPO / Lenovo 等で OS が新 APK を自動再起動しないケースの保険。
+                //   Android 12+ や OEM のバックグラウンド開始制限で蹴られる可能性もあるため
+                //   「起動を試みる」位置づけ。失敗しても次の OTA Alarm（1h）/ 端末再起動で復活する。
+                //   将来的により堅くするなら ACTION_MY_PACKAGE_REPLACED Receiver の追加も検討。
+                try {
+                    val svcIntent = Intent(context, BridgeForegroundService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(svcIntent)
+                    } else {
+                        context.startService(svcIntent)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("ChromeBridge.OTA", "Service 自動起動失敗: ${e.message}")
+                    // 起動失敗は通知しない（次の Alarm or 端末再起動で復活する）
+                }
             }
             else -> {
                 notify(context, "OTA: インストール失敗 ($status) $message")
