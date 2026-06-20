@@ -93,12 +93,24 @@ fun MainScreen(
             color = Teal
         ) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                Text(
-                    "SalesNow Bridge",
-                    color = Color.White,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                // [2026-06-20] バージョン情報をタイトル右側に小さく表示（端末で稼働中の版を一目で）
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        "SalesNow Bridge",
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (currentVersionName.isNotBlank()) {
+                        Text(
+                            "v$currentVersionName  (build $currentVersionCode)",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+                }
                 Text(
                     "Server & Page Fetcher",
                     color = Color.White.copy(alpha = 0.8f),

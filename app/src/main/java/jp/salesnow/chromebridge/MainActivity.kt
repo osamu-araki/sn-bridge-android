@@ -279,6 +279,17 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "アップデート設定を保存しました", Toast.LENGTH_SHORT).show()
                     },
                     onManualUpdateCheck = {
+                        // [2026-06-20] OTA install には「不明な提供元のインストール許可」が必須。
+                        //   未付与のまま発火しても UpdateChecker 冒頭で早期 return されるため、
+                        //   ボタンタップ時点で警告して設定への導線を促す。
+                        if (!packageManager.canRequestPackageInstalls()) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "「不明な提供元のインストール許可」が未付与です。設定タブ > アップデート > 「許可設定」から有効化してください。",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            return@MainScreen
+                        }
                         val intent = Intent(this@MainActivity, BridgeForegroundService::class.java).apply {
                             action = BridgeForegroundService.ACTION_CHECK_UPDATE
                         }
