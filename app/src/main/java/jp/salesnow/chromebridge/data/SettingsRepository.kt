@@ -1,4 +1,5 @@
-// Version: 1.4.0 | Updated: 2026-06-10
+// Version: 1.5.0 | Updated: 2026-06-25
+// [2026-06-25] Challenge 自動タップ記憶 (saveTapMemory / getTapMemory / clearTapMemory) を追加
 // [2026-03-08] Tunnel トークン設定を追加
 // [2026-03-11] 並列処理・キュー・タイムアウト設定を追加
 // [2026-06-10] OTA アップデート設定（Portal manifest URL / トークン / 自動チェック）を追加
@@ -106,4 +107,57 @@ class SettingsRepository(context: Context) {
     var cloudflaredEdgeIps: String
         get() = prefs.getString("cloudflared_edge_ips", "") ?: ""
         set(value) = prefs.edit { putString("cloudflared_edge_ips", value) }
+
+    // [2026-06-25] Challenge 自動タップ記憶。ドメイン → 最後にユーザーがタップした座標 (x, y) を
+    //   JSON で保存。次回チャレンジ検知時にその座標で自動タップを試みる。
+    //   {"example.com": {"x": 100.5, "y": 200.5, "ts": 1734567890000}, ...}
+    private val tapMemoryKey = "challenge_tap_memory_json"
+
+    /** ドメイン直下の (x, y) を保存。既存値は上書き。 */
+    fun saveTapMemory(domain: String, x: Float, y: Float) {
+        if (domain.isBlank()) return
+        val root = try {
+            prefs.getString(tapMemoryKey, null)?.let { org.json.JSONObject(it) }
+                ?: org.json.JSONObject()
+        } catch (_: Exception) {
+            // JSON 壊れていたら捨てて新規作成
+            org.json.JSONObject()
+        }
+        root.put(domain, org.json.JSONObject().apply {
+            put("x", x.toDouble())
+            put("y", y.toDouble())
+            put("ts", System.currentTimeMillis())
+        })
+        prefs.edit { putString(tapMemoryKey, root.toString()) }
+    }
+
+    data class TapCoord(val x: Float, val y: Float, val ts: Long)
+
+    /** ドメインの保存済タップ座標を返す。未保存なら null。 */
+    fun getTapMemory(domain: String): TapCoord? {
+        if (domain.isBlank()) return null
+        return try {
+            val raw = prefs.getString(tapMemoryKey, null) ?: return null
+            val obj = org.json.JSONObject(raw).optJSONObject(domain) ?: return null
+            TapCoord(
+                x = obj.optDouble("x").toFloat(),
+                y = obj.optDouble("y").toFloat(),
+                ts = obj.optLong("ts"),
+            )
+        } catch (_: Exception) { null }
+    }
+
+    /** ドメイン指定で削除（null なら全消去）。 */
+    fun clearTapMemory(domain: String? = null) {
+        try {
+            if (domain == null) {
+                prefs.edit { remove(tapMemoryKey) }
+                return
+            }
+            val raw = prefs.getString(tapMemoryKey, null) ?: return
+            val root = org.json.JSONObject(raw)
+            root.remove(domain)
+            prefs.edit { putString(tapMemoryKey, root.toString()) }
+        } catch (_: Exception) {}
+    }
 }

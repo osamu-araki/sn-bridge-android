@@ -1,14 +1,20 @@
-// Version: 2.1.0 | Updated: 2026-06-10
+// Version: 2.2.0 | Updated: 2026-06-25
 // [2026-03-13] Cloudflare チャレンジ等の手動認証画面
 // [2026-03-13] ロック画面・バックグラウンドからの表示対応
 // [2026-06-10] Codex#4: ChallengeManager のキュー対応に追従。head 切替時に WebView を差し替える。
 // [2026-06-10] Codex 再レビュー: attachActivity で atomic に callback 登録 + 初期 head 取得し
 //   onCreate 中の dismiss(head) を取り逃がさない。onDestroy は detachActivity を呼ぶ。
+// [2026-06-25] ドメイン別タップ記憶 + 次回自動タップ。Cookie 同意 / 単純な確認ボタンの自動突破用。
+//   Cloudflare Turnstile / reCAPTCHA 等の bot 検知は通らない設計だが、軽い障壁の自動化に効く。
 package jp.salesnow.chromebridge
 
 import android.app.KeyguardManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -16,17 +22,31 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import jp.salesnow.chromebridge.data.SettingsRepository
 import jp.salesnow.chromebridge.fetcher.ChallengeManager
 
 /**
  * WebView を画面に表示して、ユーザーが手動で Cloudflare チャレンジ等を解除できるようにする Activity。
  * ChallengeManager.show() からフルスクリーンインテント経由で起動される。
  * 複数 WebView が同時に challenge になっても、キューの head を1つずつ表示する。
+ *
+ * [2026-06-25] 1 度ユーザーがタップしたドメインは座標を SharedPreferences に記録し、
+ * 次回同じドメインで challenge が出た時に自動タップを試みる。
  */
 class ChallengeActivity : ComponentActivity() {
 
     private var currentWebView: WebView? = null
     private lateinit var webViewContainer: FrameLayout
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // [2026-06-25] 現在の WebView 上でユーザーが最後にタップした座標。
+    //   dismiss された（= challenge 通過した）タイミングでドメイン別に保存する。
+    private var lastTapX: Float? = null
+    private var lastTapY: Float? = null
+    private var lastTapDomain: String? = null
+    // [2026-06-25] Codex 指摘: タイムアウト等で head が消えた時に古い座標を保存しないため、
+    //   タップ時刻から SAVE_WINDOW_MS 以内に dismiss された場合だけ保存する。
+    private var lastTapAtMs: Long = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,14 +110,11 @@ class ChallengeActivity : ComponentActivity() {
         // [2026-06-10] atomic な callback 登録 + 初期 head 取得。
         //   registration と head の読み出し間に dismiss(head) が走っても
         //   ChallengeManager 内のロックで整合する。
+        // [2026-06-25] head 切替 / 終了の遷移を捕まえて、消えた WebView の domain に
+        //   直前のタップを保存する。
         val initial = ChallengeManager.attachActivity(this) { next ->
             runOnUiThread {
-                if (next == null) {
-                    finish()
-                } else if (next !== currentWebView) {
-                    detachCurrent()
-                    attachWebView(next)
-                }
+                onHeadChanged(next)
             }
         }
         if (initial == null) {
@@ -105,6 +122,39 @@ class ChallengeActivity : ComponentActivity() {
             return
         }
         attachWebView(initial)
+    }
+
+    /** head が next に切り替わった or 終了 (next=null) になった時の処理。 */
+    private fun onHeadChanged(next: WebView?) {
+        // 直前の WebView が消えた = challenge 通過した。最後のタップを domain に保存。
+        persistLastTapIfAny()
+        if (next == null) {
+            finish()
+        } else if (next !== currentWebView) {
+            detachCurrent()
+            attachWebView(next)
+        }
+    }
+
+    private fun persistLastTapIfAny() {
+        val x = lastTapX
+        val y = lastTapY
+        val d = lastTapDomain
+        val sinceTap = System.currentTimeMillis() - lastTapAtMs
+        val recent = lastTapAtMs > 0 && sinceTap in 0..SAVE_WINDOW_MS
+        if (x != null && y != null && !d.isNullOrBlank() && recent &&
+            x.isFinite() && y.isFinite() && x >= 0f && y >= 0f
+        ) {
+            try {
+                SettingsRepository(this).saveTapMemory(d, x, y)
+            } catch (_: Exception) {
+                // 保存失敗は致命ではないので無視
+            }
+        }
+        lastTapX = null
+        lastTapY = null
+        lastTapDomain = null
+        lastTapAtMs = 0L
     }
 
     private fun attachWebView(wv: WebView) {
@@ -117,17 +167,106 @@ class ChallengeActivity : ComponentActivity() {
             )
         )
         currentWebView = wv
+
+        // [2026-06-25] このページのドメインを記録 + 保存済みタップを自動発火
+        lastTapDomain = extractDomain(wv.url)
+        installTapCaptureListener(wv)
+        scheduleAutoTap(wv)
+    }
+
+    /** WebView の URL から host (lowercase) を取り出す。host が無ければ null。 */
+    private fun extractDomain(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            java.net.URI(url).host?.lowercase()
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * WebView へのタッチを横取りせず passthrough しつつ、最後の ACTION_DOWN 座標を記録する。
+     * setOnTouchListener は false を返してデフォルト処理に委ねる。
+     * Codex 指摘: ACTION_DOWN のたびに domain を再取得し、ページ内遷移にも追従する。
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun installTapCaptureListener(wv: WebView) {
+        wv.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                lastTapX = event.x
+                lastTapY = event.y
+                lastTapAtMs = System.currentTimeMillis()
+                // domain はタップ時の最新 URL から取り直す（リダイレクト追従）
+                extractDomain(wv.url)?.let { lastTapDomain = it }
+            }
+            false
+        }
+    }
+
+    /**
+     * このドメインの保存済み座標があれば 2 秒後に dispatchTouchEvent を発火。
+     * 効くのは Cookie 同意 / 単純な確認ボタン等。bot 検知のあるチャレンジは通らない。
+     */
+    private fun scheduleAutoTap(wv: WebView) {
+        val domain = lastTapDomain ?: return
+        val coord = try {
+            SettingsRepository(this).getTapMemory(domain)
+        } catch (_: Exception) { null } ?: return
+        // Codex 指摘: 壊れた値 (NaN / 負数) は捨てる。WebView 外座標も発火しても無害だが省く。
+        if (!coord.x.isFinite() || !coord.y.isFinite() || coord.x < 0f || coord.y < 0f) return
+
+        mainHandler.postDelayed(Runnable {
+            // 別 WebView に差し替わっていたら何もしない
+            if (currentWebView !== wv) return@Runnable
+            // WebView 描画後の bounds を超えていたら捨てる（端末変更・回転対策）
+            val w = wv.width
+            val h = wv.height
+            if (w > 0 && h > 0 && (coord.x > w.toFloat() || coord.y > h.toFloat())) return@Runnable
+            try {
+                val downTime = SystemClock.uptimeMillis()
+                val down = MotionEvent.obtain(
+                    downTime, downTime, MotionEvent.ACTION_DOWN, coord.x, coord.y, 0
+                )
+                wv.dispatchTouchEvent(down)
+                down.recycle()
+                mainHandler.postDelayed(Runnable {
+                    if (currentWebView !== wv) return@Runnable
+                    try {
+                        val upTime = SystemClock.uptimeMillis()
+                        val up = MotionEvent.obtain(
+                            downTime, upTime, MotionEvent.ACTION_UP, coord.x, coord.y, 0
+                        )
+                        wv.dispatchTouchEvent(up)
+                        up.recycle()
+                    } catch (_: Exception) {}
+                }, AUTO_TAP_UP_DELAY_MS)
+            } catch (_: Exception) {
+                // 自動タップ失敗は致命ではない（ユーザーが手動で操作可）
+            }
+        }, AUTO_TAP_DOWN_DELAY_MS)
     }
 
     private fun detachCurrent() {
+        currentWebView?.setOnTouchListener(null)
         currentWebView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         currentWebView = null
     }
 
     override fun onDestroy() {
+        // [2026-06-25] back キーや手動 finish() でも、直前タップがあれば保存しておく
+        persistLastTapIfAny()
+        mainHandler.removeCallbacksAndMessages(null)
         // Activity 破棄前に WebView を親から切り離す（WebView の二重破棄防止）
         detachCurrent()
         ChallengeManager.detachActivity(this)
         super.onDestroy()
+    }
+
+    companion object {
+        // ページレンダリングを待つ時間（reCAPTCHA / Cloudflare は通らないが、Cookie 同意系は OK）
+        private const val AUTO_TAP_DOWN_DELAY_MS = 2_000L
+        // ACTION_DOWN と ACTION_UP の間隔（人間のタップに近い 80–100ms 想定）
+        private const val AUTO_TAP_UP_DELAY_MS = 80L
+        // [2026-06-25] 最後のタップから X ms 以内に dismiss された場合のみ「成功タップ」として保存。
+        //   タイムアウトでの head 消失時に古い座標を記憶しないため。
+        private const val SAVE_WINDOW_MS = 10_000L
     }
 }
