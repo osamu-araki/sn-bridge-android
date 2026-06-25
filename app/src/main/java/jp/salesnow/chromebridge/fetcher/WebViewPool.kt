@@ -1,4 +1,5 @@
-// Version: 1.9.0 | Updated: 2026-06-20
+// Version: 1.10.0 | Updated: 2026-06-25
+// [2026-06-25] チャレンジ検知をタイトル単体から「title + URL + reCAPTCHA iframe」の複合判定に拡張
 // [2026-06-20] FetchRequest.userAgent を doFetch 内で WebView.settings に適用、リクエスト毎の UA 上書きをサポート
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
 // [2026-03-13] メインスレッドデッドロック修正、SSL エラーハンドリング追加
@@ -216,17 +217,49 @@ class WebViewPool(
                     if (extracted || settled.get()) return
                     if (url == null || url == "about:blank") return
 
-                    // [2026-03-13] タイトルでチャレンジページかどうか判定
-                    wv.evaluateJavascript("document.title") { titleRaw ->
+                    // [2026-06-25] タイトル + URL + reCAPTCHA iframe + 本文長の複合判定。
+                    //   evaluateJavascript の callback には JSON.stringify(...) の戻り値が
+                    //   さらに文字列リテラルとして来るため、二段 parse する。
+                    //   parse 失敗時は challenge 判定を skip して通常抽出に進む。
+                    val detectJs = "JSON.stringify({" +
+                        "title: document.title||''," +
+                        "url: location.href||''," +
+                        "recaptcha: !!document.querySelector(" +
+                            "'iframe[src*=\"recaptcha\"],iframe[src*=\"google.com/recaptcha\"]')," +
+                        "bodyLen: (document.body && document.body.innerText || '').trim().length" +
+                        "})"
+                    wv.evaluateJavascript(detectJs) { jsonRaw ->
                         if (extracted || settled.get()) return@evaluateJavascript
-                        val title = titleRaw?.trim('"') ?: ""
+                        var title = ""
+                        var pageUrl = ""
+                        var hasRecaptcha = false
+                        var bodyLen = -1
+                        var parsedOk = false
+                        try {
+                            val unwrapped = com.google.gson.JsonParser.parseString(jsonRaw).asString
+                            val obj = com.google.gson.JsonParser.parseString(unwrapped).asJsonObject
+                            title = obj.get("title")?.asString ?: ""
+                            pageUrl = obj.get("url")?.asString ?: ""
+                            hasRecaptcha = obj.get("recaptcha")?.asBoolean ?: false
+                            bodyLen = obj.get("bodyLen")?.asInt ?: -1
+                            parsedOk = true
+                        } catch (_: Exception) {
+                            // parse 失敗時は challenge 判定を skip（通常抽出にフォールスルー）
+                        }
 
-                        if (ChallengeManager.isChallengeTitle(title)) {
+                        if (parsedOk && ChallengeManager.isChallenge(title, pageUrl, hasRecaptcha, bodyLen)) {
                             // チャレンジページ検知 → ユーザーに画面を表示
                             challengeDetected.set(true)
                             if (!challengeShown.getAndSet(true)) {
                                 challengeStartMs = System.currentTimeMillis()
-                                onLog("チャレンジ検知: domain=$challengeDomain title=\"$title\" (worker=$workerId)")
+                                val lowerUrl = pageUrl.lowercase()
+                                val kind = when {
+                                    lowerUrl.contains("google.com/sorry") ||
+                                        lowerUrl.contains("google.co.jp/sorry") -> "Google sorry"
+                                    hasRecaptcha -> "reCAPTCHA iframe"
+                                    else -> "title"
+                                }
+                                onLog("チャレンジ検知 [$kind]: domain=$challengeDomain title=\"$title\" url=\"$pageUrl\" (worker=$workerId)")
                                 ChallengeManager.show(context, wv)
                             }
                             // latch は countDown しない → ユーザーの操作を待つ

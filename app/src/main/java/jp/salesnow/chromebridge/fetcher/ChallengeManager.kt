@@ -98,20 +98,62 @@ object ChallengeManager {
     }
 
     // [2026-03-13] チャレンジページのタイトル判定
+    // [2026-06-25] Google 検索の sorry / unusual traffic も検知対象に
     private val challengeTitles = listOf(
+        // Cloudflare 系
         "security check",
         "しばらくお待ちください",
         "just a moment",
         "attention required",
         "checking your browser",
         "please wait",
-        "un instant"
+        "un instant",
+        // [2026-06-25] Google 検索ブロック・sorry ページ系
+        "sorry...",
+        "before you continue",
+        "unusual traffic",
+        "automated queries",
+    )
+
+    // [2026-06-25] URL でも判定（Google sorry へのリダイレクト等）
+    //   host を Google 系に限定して、任意サイトの /sorry/ ページを誤検知しないようにする
+    private val challengeUrlPatterns = listOf(
+        "google.com/sorry",
+        "google.co.jp/sorry",
     )
 
     fun isChallengeTitle(title: String): Boolean {
         val lower = title.lowercase().trim()
         return challengeTitles.any { lower.contains(it) }
     }
+
+    /**
+     * [2026-06-25] タイトル / URL / DOM ヒントを合成してチャレンジか判定する。
+     *   - title:               document.title
+     *   - url:                 location.href
+     *   - hasRecaptchaIframe:  ページ内に reCAPTCHA iframe が埋め込まれているか
+     *   - visibleBodyLen:      document.body.innerText の trim 後文字数（負値なら不明）
+     *
+     * reCAPTCHA iframe は invisible reCAPTCHA や問い合わせフォーム等にも埋まっているので
+     * 単独では false positive リスクが高い。本文が極端に少ない（チャレンジ専用ページ相当）
+     * 場合に限って challenge 扱いする。
+     */
+    fun isChallenge(
+        title: String,
+        url: String,
+        hasRecaptchaIframe: Boolean,
+        visibleBodyLen: Int,
+    ): Boolean {
+        if (isChallengeTitle(title)) return true
+        val lowerUrl = url.lowercase()
+        if (challengeUrlPatterns.any { lowerUrl.contains(it) }) return true
+        // reCAPTCHA 単独判定: body 文字数で「チャレンジ専用ページ」に限定
+        if (hasRecaptchaIframe && visibleBodyLen in 0..RECAPTCHA_BODY_LEN_THRESHOLD) return true
+        return false
+    }
+
+    /** reCAPTCHA iframe 単独判定の本文長閾値。これ以下なら「reCAPTCHA だけのページ」と判断 */
+    private const val RECAPTCHA_BODY_LEN_THRESHOLD = 200
 
     /**
      * チャレンジ画面を表示する（または既に表示中なら順番待ちキューに追加）。
