@@ -38,6 +38,8 @@ class ChallengeActivity : ComponentActivity() {
     private var currentWebView: WebView? = null
     private lateinit var webViewContainer: FrameLayout
     private val mainHandler = Handler(Looper.getMainLooper())
+    // [2026-06-25] ヘッダー右側のステータステキスト（自動タップ試行中 / 失敗）
+    private var subtitleText: TextView? = null
 
     // [2026-06-25] 現在の WebView 上でユーザーが最後にタップした座標。
     //   dismiss された（= challenge 通過した）タイミングでドメイン別に保存する。
@@ -91,6 +93,7 @@ class ChallengeActivity : ComponentActivity() {
                     textSize = 13f
                     setTextColor(0xCCFFFFFF.toInt())
                     setPadding(0, 12, 0, 0)
+                    subtitleText = this
                 })
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -171,6 +174,8 @@ class ChallengeActivity : ComponentActivity() {
         // [2026-06-25] このページのドメインを記録 + 保存済みタップを自動発火
         lastTapDomain = extractDomain(wv.url)
         installTapCaptureListener(wv)
+        // 新しい WebView を表示するときは「失敗」状態をクリア
+        setSubtitle("下の画面で認証を完了してください。完了後、自動的に閉じます。", warn = false)
         scheduleAutoTap(wv)
     }
 
@@ -204,6 +209,8 @@ class ChallengeActivity : ComponentActivity() {
     /**
      * このドメインの保存済み座標があれば 2 秒後に dispatchTouchEvent を発火。
      * 効くのは Cookie 同意 / 単純な確認ボタン等。bot 検知のあるチャレンジは通らない。
+     * 発火後 [AUTO_TAP_FAIL_FEEDBACK_MS] 経過しても画面が閉じていなければ、ヘッダーを
+     * 「手動でタップしてください」に切り替えて従来通り人間に処理を委ねる。
      */
     private fun scheduleAutoTap(wv: WebView) {
         val domain = lastTapDomain ?: return
@@ -213,13 +220,21 @@ class ChallengeActivity : ComponentActivity() {
         // Codex 指摘: 壊れた値 (NaN / 負数) は捨てる。WebView 外座標も発火しても無害だが省く。
         if (!coord.x.isFinite() || !coord.y.isFinite() || coord.x < 0f || coord.y < 0f) return
 
+        // 試行中であることを UI で示す
+        setSubtitle("保存済みの座標で自動タップを試行中…", warn = false)
+
         mainHandler.postDelayed(Runnable {
             // 別 WebView に差し替わっていたら何もしない
             if (currentWebView !== wv) return@Runnable
             // WebView 描画後の bounds を超えていたら捨てる（端末変更・回転対策）
             val w = wv.width
             val h = wv.height
-            if (w > 0 && h > 0 && (coord.x > w.toFloat() || coord.y > h.toFloat())) return@Runnable
+            if (w > 0 && h > 0 && (coord.x > w.toFloat() || coord.y > h.toFloat())) {
+                // Codex 指摘: bounds NG で early return すると「試行中…」のまま固定されるので
+                //   ここで失敗フィードバックに切り替えてから return する。
+                setSubtitle("保存済み座標が画面外のため自動タップできません。手動でタップしてください。", warn = true)
+                return@Runnable
+            }
             try {
                 val downTime = SystemClock.uptimeMillis()
                 val down = MotionEvent.obtain(
@@ -241,7 +256,20 @@ class ChallengeActivity : ComponentActivity() {
             } catch (_: Exception) {
                 // 自動タップ失敗は致命ではない（ユーザーが手動で操作可）
             }
+            // 一定時間経過しても画面が閉じていなければ「失敗」フィードバックに切り替える
+            mainHandler.postDelayed(Runnable {
+                if (currentWebView !== wv) return@Runnable
+                setSubtitle("自動タップでは通過できませんでした。手動でタップしてください。", warn = true)
+            }, AUTO_TAP_FAIL_FEEDBACK_MS)
         }, AUTO_TAP_DOWN_DELAY_MS)
+    }
+
+    /** ヘッダー下のステータステキストを更新する。warn=true なら橙系で強調表示。 */
+    private fun setSubtitle(text: String, warn: Boolean) {
+        subtitleText?.let {
+            it.text = text
+            it.setTextColor(if (warn) 0xFFFFD08A.toInt() else 0xCCFFFFFF.toInt())
+        }
     }
 
     private fun detachCurrent() {
@@ -268,5 +296,8 @@ class ChallengeActivity : ComponentActivity() {
         // [2026-06-25] 最後のタップから X ms 以内に dismiss された場合のみ「成功タップ」として保存。
         //   タイムアウトでの head 消失時に古い座標を記憶しないため。
         private const val SAVE_WINDOW_MS = 10_000L
+        // [2026-06-25] 自動タップ発火後、この時間経過しても画面が閉じていなければ
+        //   ユーザーに「手動操作してください」とフィードバックする。
+        private const val AUTO_TAP_FAIL_FEEDBACK_MS = 5_000L
     }
 }

@@ -147,6 +147,26 @@ class SettingsRepository(context: Context) {
         } catch (_: Exception) { null }
     }
 
+    /** 保存済みの全エントリを最終更新時刻の降順で返す（UI 一覧表示用）。 */
+    fun listTapMemoryEntries(): List<Pair<String, TapCoord>> {
+        return try {
+            val raw = prefs.getString(tapMemoryKey, null) ?: return emptyList()
+            val root = org.json.JSONObject(raw)
+            val out = mutableListOf<Pair<String, TapCoord>>()
+            val it = root.keys()
+            while (it.hasNext()) {
+                val key = it.next()
+                val obj = root.optJSONObject(key) ?: continue
+                out += key to TapCoord(
+                    x = obj.optDouble("x").toFloat(),
+                    y = obj.optDouble("y").toFloat(),
+                    ts = obj.optLong("ts"),
+                )
+            }
+            out.sortedByDescending { it.second.ts }
+        } catch (_: Exception) { emptyList() }
+    }
+
     /** ドメイン指定で削除（null なら全消去）。 */
     fun clearTapMemory(domain: String? = null) {
         try {

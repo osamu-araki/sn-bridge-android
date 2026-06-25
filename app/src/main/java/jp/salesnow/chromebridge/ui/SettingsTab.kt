@@ -14,6 +14,7 @@ import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import jp.salesnow.chromebridge.data.SettingsRepository
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color
@@ -429,6 +430,73 @@ fun SettingsTab(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("自動起動設定を開く（${android.os.Build.MANUFACTURER}）")
+                    }
+                }
+            }
+        }
+
+        // [2026-06-25] チャレンジ自動タップ記憶（ドメイン別の学習一覧 + 削除）
+        item {
+            val ctx = LocalContext.current
+            // refreshTrigger を Int でカウントアップして強制 re-compose
+            var refreshTrigger by remember { mutableIntStateOf(0) }
+            val entries = remember(refreshTrigger) {
+                runCatching { SettingsRepository(ctx).listTapMemoryEntries() }.getOrDefault(emptyList())
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "チャレンジ自動タップ記憶",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (entries.isEmpty()) {
+                        Text("学習データはありません", fontSize = 12.sp, color = GrayLight)
+                    } else {
+                        for ((domain, coord) in entries) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(domain, fontSize = 13.sp, color = NavyDark)
+                                    Text(
+                                        "(${coord.x.toInt()}, ${coord.y.toInt()}) · 学習: " +
+                                            java.text.SimpleDateFormat(
+                                                "yyyy/MM/dd HH:mm:ss",
+                                                java.util.Locale.JAPAN
+                                            ).apply {
+                                                timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+                                            }.format(java.util.Date(coord.ts)),
+                                        fontSize = 11.sp,
+                                        color = GrayLight,
+                                    )
+                                }
+                                TextButton(onClick = {
+                                    SettingsRepository(ctx).clearTapMemory(domain)
+                                    refreshTrigger++
+                                }) {
+                                    Text("削除", color = Teal, fontSize = 12.sp)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                SettingsRepository(ctx).clearTapMemory()
+                                refreshTrigger++
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("すべての学習データを削除")
+                        }
                     }
                 }
             }
