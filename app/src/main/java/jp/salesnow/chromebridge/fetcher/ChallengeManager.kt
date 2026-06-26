@@ -1,9 +1,10 @@
-// Version: 2.0.0 | Updated: 2026-06-10
+// Version: 2.1.0 | Updated: 2026-06-26
 // [2026-03-13] Cloudflare チャレンジ検知時に WebView を画面表示するための管理シングルトン
 // [2026-03-13] フルスクリーンインテント対応: バックグラウンドでも通知経由で確実に画面表示
 // [2026-03-13] Slack Incoming Webhook 通知対応
 // [2026-04-11] SYSTEM_ALERT_WINDOW 権限があれば通知をスキップして直接 Activity 起動
 // [2026-06-10] Codex#4: 複数 WebView 同時 challenge に対応するためキュー化
+// [2026-06-26] Slack 通知本文に端末識別情報 (TunnelDomain / 端末モデル) を埋め込み
 package jp.salesnow.chromebridge.fetcher
 
 import android.app.NotificationChannel
@@ -205,12 +206,36 @@ object ChallengeManager {
     }
 
     private fun notifySlackIfNeeded(context: Context) {
-        val webhookUrl = SettingsRepository(context).slackWebhookUrl
+        val repo = SettingsRepository(context)
+        val webhookUrl = repo.slackWebhookUrl
         if (webhookUrl.isBlank()) return
+        // [2026-06-26] 通知本文に端末識別情報を入れる（複数端末で同じチャンネルに飛ばしている
+        //   ケースで、どの端末が引っかかったかを Slack だけで判別できるようにするため）。
+        //   TunnelDomain (bridge1.salesnow-cs.jp 等) が一番識別性が高いので主、未設定時は
+        //   端末モデル (Build.MANUFACTURER / Build.MODEL) を fallback として使う。
+        val tunnel = repo.tunnelDomain.trim()
+        val deviceLabel = if (tunnel.isNotEmpty()) {
+            tunnel
+        } else {
+            "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+        }
+        val text = buildString {
+            append(":warning: *SalesNow Bridge [")
+            append(deviceLabel)
+            append("]: 認証チャレンジ検知*\n手動認証が必要です。端末を確認してください。")
+            if (tunnel.isNotEmpty()) {
+                append("\n• Tunnel: ")
+                append(tunnel)
+            }
+            append("\n• Device: ")
+            append(android.os.Build.MANUFACTURER)
+            append(" ")
+            append(android.os.Build.MODEL)
+        }
         Thread {
             try {
                 val payload = JSONObject().apply {
-                    put("text", ":warning: *SalesNow Bridge: 認証チャレンジ検知*\n手動認証が必要です。端末を確認してください。")
+                    put("text", text)
                 }
                 val conn = URL(webhookUrl).openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
