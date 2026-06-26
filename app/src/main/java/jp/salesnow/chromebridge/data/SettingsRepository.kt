@@ -1,4 +1,6 @@
-// Version: 1.5.0 | Updated: 2026-06-25
+// Version: 1.6.0 | Updated: 2026-06-26
+// [2026-06-26] デフォルト User-Agent override + 同一ホストへの最小リクエスト間隔を追加
+//   (Google 403 等のクライアント単位ブロックの予防策)
 // [2026-06-25] Challenge 自動タップ記憶 (saveTapMemory / getTapMemory / clearTapMemory) を追加
 // [2026-03-08] Tunnel トークン設定を追加
 // [2026-03-11] 並列処理・キュー・タイムアウト設定を追加
@@ -107,6 +109,22 @@ class SettingsRepository(context: Context) {
     var cloudflaredEdgeIps: String
         get() = prefs.getString("cloudflared_edge_ips", "") ?: ""
         set(value) = prefs.edit { putString("cloudflared_edge_ips", value) }
+
+    // [2026-06-26] Bridge が WebView で外部 URL を fetch する際のデフォルト User-Agent。
+    //   空文字なら WebView 既定の Android UA を使用（従来挙動）。Google 等で `; wv` を含む
+    //   WebView UA が flag されやすいため、デスクトップ Chrome UA に差し替えて回避する。
+    //   FetchRequest.userAgent が指定されていればそちらを優先（per-request override は据え置き）。
+    var defaultUserAgentOverride: String
+        get() = prefs.getString("default_user_agent_override", "") ?: ""
+        set(value) = prefs.edit { putString("default_user_agent_override", value) }
+
+    // [2026-06-26] 同一ホストへの最小リクエスト間隔（ミリ秒）。0 で無効（throttle なし）。
+    //   Google 等の bot 検出に頻度が引っかからないようにする防御策。並列リクエストでも
+    //   host 単位で順次これだけの間隔が空くよう WebViewPool 側でガードする。
+    //   推奨値: 2000〜5000ms（Google 検索）/ 0（通常用途）
+    var minRequestIntervalMs: Long
+        get() = prefs.getLong("min_request_interval_ms", 0L)
+        set(value) = prefs.edit { putLong("min_request_interval_ms", value.coerceAtLeast(0L)) }
 
     // [2026-06-25] Challenge 自動タップ記憶。ドメイン → 最後にユーザーがタップした座標 (x, y) を
     //   JSON で保存。次回チャレンジ検知時にその座標で自動タップを試みる。

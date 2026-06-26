@@ -1,4 +1,6 @@
-// Version: 1.10.0 | Updated: 2026-06-25
+// Version: 1.11.0 | Updated: 2026-06-26
+// [2026-06-26] デフォルト User-Agent override (Settings) を fetch 時に適用 + 同一ホストへの
+//   最小リクエスト間隔 throttle を追加（Google 403 等の予防策）
 // [2026-06-25] チャレンジ検知をタイトル単体から「title + URL + reCAPTCHA iframe」の複合判定に拡張
 // [2026-06-20] FetchRequest.userAgent を doFetch 内で WebView.settings に適用、リクエスト毎の UA 上書きをサポート
 // [2026-03-11] Semaphore ベースの WebView プール。複数 WebView を並列管理する。
@@ -61,6 +63,13 @@ class WebViewPool(
     //   doFetch 開始時に必ずこの値か request.userAgent のどちらかで明示的に設定し直すので、
     //   前回 override の影響が残らない。
     @Volatile private var defaultUserAgent: String = ""
+
+    // [2026-06-26] 同一ホストへの最小リクエスト間隔 throttle 用。
+    //   nextAllowedAtByHost[host] = 「次に fetch を開始してよい時刻 (ms)」
+    //   並列で来ても synchronized(throttleLock) 内で順序付けされ、
+    //   同じ host への 2 件目以降は minRequestIntervalMs ずつ後ろにシフトされる。
+    private val throttleLock = Any()
+    private val nextAllowedAtByHost = ConcurrentHashMap<String, Long>()
     // [2026-05-18] maybeReplenish の多重実行ガード
     private val replenishing = AtomicBoolean(false)
     // [2026-05-18] destroy 後の release / replace / replenish を無効化するフラグ
@@ -175,6 +184,14 @@ class WebViewPool(
         // [2026-05-18] 欠損があれば非同期でプールを補充（トラフィック時に自己回復）
         maybeReplenish()
 
+        // [2026-06-26] 同一ホストへの最小リクエスト間隔 throttle
+        if (!applyHostThrottleIfNeeded(request.url)) {
+            return FetchResult(
+                ok = false, error = "interrupted",
+                message = "throttle 待機中に割り込みを受けたため中断しました"
+            )
+        }
+
         val pair = acquire(acquireTimeoutMs)
             ?: return FetchResult(
                 ok = false, error = "pool_busy",
@@ -194,6 +211,42 @@ class WebViewPool(
 
     // [2026-03-13] チャレンジ手動解除の追加待ち時間（秒）
     private val challengeExtraTimeout = 120L
+
+    /**
+     * [2026-06-26] 同一ホストに対する最小リクエスト間隔を強制する。
+     *   - 設定値が 0 以下なら何もしない（従来挙動）
+     *   - 複数並列で来ても synchronized 内で「次に開始してよい時刻」を順次後ろにずらすので、
+     *     N 件来た場合は 0, +interval, +2*interval, ... の順に間隔が空く
+     *   - 待機は Thread.sleep（fetch 呼び出しスレッドをブロック）。WebView 取得前に行うので
+     *     プールの permit を消費しない＝他 host のリクエストは並列で進める
+     */
+    /** 戻り値: true=throttle 完了で fetch 続行可、false=中断で fetch を打ち切るべき */
+    private fun applyHostThrottleIfNeeded(url: String): Boolean {
+        val intervalMs = try {
+            jp.salesnow.chromebridge.data.SettingsRepository(context).minRequestIntervalMs
+        } catch (_: Exception) { 0L }
+        if (intervalMs <= 0L) return true
+        val host = try {
+            java.net.URI(url).host?.lowercase()
+        } catch (_: Exception) { null } ?: return true
+        val waitMs = synchronized(throttleLock) {
+            val now = System.currentTimeMillis()
+            val nextAllowed = nextAllowedAtByHost[host] ?: 0L
+            val startAt = maxOf(nextAllowed, now)
+            nextAllowedAtByHost[host] = startAt + intervalMs
+            startAt - now
+        }
+        if (waitMs > 0L) {
+            onLog("throttle: host=$host wait=${waitMs}ms")
+            try { Thread.sleep(waitMs) } catch (_: InterruptedException) {
+                // [2026-06-26] Codex 指摘: ここで interrupt() を立てると後続の Semaphore.tryAcquire
+                //   が InterruptedException を投げて fetch() 側でハンドルされないため、明示的に
+                //   "中断" を呼び出し元に返して FetchResult(error="interrupted") に倒す。
+                return false
+            }
+        }
+        return true
+    }
 
     private fun doFetch(wv: WebView, request: FetchRequest, workerId: Int): FetchResult {
         val latch = CountDownLatch(1)
@@ -324,8 +377,15 @@ class WebViewPool(
             }
             // [2026-06-20] リクエスト毎の User-Agent を適用。null/空文字なら createWebView 時の
             //   デフォルトに戻す（前回 override の影響を消す）。loadUrl の直前に必ず実行。
+            // [2026-06-26] 優先順位: per-request UA > 設定 defaultUserAgentOverride > WebView 既定 UA。
+            //   Google 等で `; wv` の付く Android WebView UA が flag されやすいため、設定でデスクトップ
+            //   Chrome UA に差し替えてグローバルに適用できるようにする。
             val requestedUa = request.userAgent?.takeIf { it.isNotBlank() }
-            wv.settings.userAgentString = requestedUa ?: defaultUserAgent
+            val configuredDefault = try {
+                jp.salesnow.chromebridge.data.SettingsRepository(context)
+                    .defaultUserAgentOverride.takeIf { it.isNotBlank() }
+            } catch (_: Exception) { null }
+            wv.settings.userAgentString = requestedUa ?: configuredDefault ?: defaultUserAgent
             wv.loadUrl(request.url)
         }
 

@@ -598,6 +598,78 @@ fun SettingsTab(
             }
         }
 
+        // [2026-06-26] リクエストカスタマイズ（デフォルト UA + 同一ホスト最小間隔）
+        //   Google 403 等のクライアント単位ブロックの予防策。
+        item {
+            val ctx = LocalContext.current
+            val repo = remember { SettingsRepository(ctx) }
+            var uaInput by remember { mutableStateOf(repo.defaultUserAgentOverride) }
+            var intervalInput by remember { mutableStateOf(repo.minRequestIntervalMs.toString()) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "リクエストカスタマイズ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = uaInput,
+                        onValueChange = { uaInput = it },
+                        label = { Text("デフォルト User-Agent (空欄で WebView 既定)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        minLines = 2,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { uaInput = DESKTOP_CHROME_UA },
+                        ) {
+                            Text("デスクトップ Chrome", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { uaInput = "" },
+                        ) {
+                            Text("既定に戻す", fontSize = 12.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = intervalInput,
+                        onValueChange = { intervalInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("同一ホスト最小間隔（ミリ秒、0で無効）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            repo.defaultUserAgentOverride = uaInput.trim()
+                            repo.minRequestIntervalMs = intervalInput.toLongOrNull() ?: 0L
+                        },
+                    ) {
+                        Text("保存")
+                    }
+                }
+            }
+        }
+
         // [2026-03-13] チャレンジ認証設定
         item {
             // [2026-04-11] オーバーレイ権限の状態を lifecycle で追従
@@ -1009,3 +1081,9 @@ private fun openOemAutoStartSettings(context: Context) {
         context.startActivity(fallback)
     } catch (_: Exception) {}
 }
+
+// [2026-06-26] ワンタップで設定できるデスクトップ Chrome UA。
+//   Google が WebView UA (`; wv`) を flag するケースの回避策として、デフォルトで提示する。
+//   2025 後半時点の安定版 Chrome バージョンを使用。
+private const val DESKTOP_CHROME_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
