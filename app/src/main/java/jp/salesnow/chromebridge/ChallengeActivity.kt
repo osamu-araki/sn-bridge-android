@@ -49,6 +49,13 @@ class ChallengeActivity : ComponentActivity() {
     // [2026-06-25] Codex 指摘: タイムアウト等で head が消えた時に古い座標を保存しないため、
     //   タップ時刻から SAVE_WINDOW_MS 以内に dismiss された場合だけ保存する。
     private var lastTapAtMs: Long = 0L
+    // [2026-06-26] 画像選択など 2 段階目以降のタップで以前のチェックボックス座標を上書きしない
+    //   ため、attachWebView 後の「最初の ACTION_DOWN」だけ学習対象として記録する。
+    //   reCAPTCHA: 1 回目 = 「私はロボットではありません」 / 2 回目以降 = 画像選択
+    private var tapAlreadyCaptured: Boolean = false
+    // [2026-06-26] dispatchTouchEvent 自身が OnTouchListener を通って「ユーザータップ」と
+    //   誤認されないよう、自動タップ中フラグを立てる（Codex 指摘 #1）。
+    private var isAutoTapping: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -173,6 +180,9 @@ class ChallengeActivity : ComponentActivity() {
 
         // [2026-06-25] このページのドメインを記録 + 保存済みタップを自動発火
         lastTapDomain = extractDomain(wv.url)
+        // [2026-06-26] 新しい WebView は「未学習」状態でスタート。1 回目の ACTION_DOWN だけ
+        //   座標を捕捉し、2 回目以降（reCAPTCHA の画像選択タップ等）は無視する。
+        tapAlreadyCaptured = false
         installTapCaptureListener(wv)
         // 新しい WebView を表示するときは「失敗」状態をクリア
         setSubtitle("下の画面で認証を完了してください。完了後、自動的に閉じます。", warn = false)
@@ -195,12 +205,17 @@ class ChallengeActivity : ComponentActivity() {
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun installTapCaptureListener(wv: WebView) {
         wv.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
+            // [2026-06-26] 最初の ACTION_DOWN のみ学習対象。それ以降のタップ（reCAPTCHA の
+            //   画像選択や、画像チャレンジを通過するための「確認」ボタン等）は無視して、
+            //   以前のチェックボックス座標がそのまま残るようにする。
+            // [2026-06-26] dispatchTouchEvent 経由の自動タップは isAutoTapping で除外。
+            if (event.action == MotionEvent.ACTION_DOWN && !tapAlreadyCaptured && !isAutoTapping) {
                 lastTapX = event.x
                 lastTapY = event.y
                 lastTapAtMs = System.currentTimeMillis()
                 // domain はタップ時の最新 URL から取り直す（リダイレクト追従）
                 extractDomain(wv.url)?.let { lastTapDomain = it }
+                tapAlreadyCaptured = true
             }
             false
         }
@@ -235,6 +250,9 @@ class ChallengeActivity : ComponentActivity() {
                 setSubtitle("保存済み座標が画面外のため自動タップできません。手動でタップしてください。", warn = true)
                 return@Runnable
             }
+            // [2026-06-26] 自動タップが OnTouchListener に「ユーザータップ」と誤認されないよう
+            //   isAutoTapping を立てる。UP 完了後（および例外時）に必ず false に戻す。
+            isAutoTapping = true
             try {
                 val downTime = SystemClock.uptimeMillis()
                 val down = MotionEvent.obtain(
@@ -243,18 +261,22 @@ class ChallengeActivity : ComponentActivity() {
                 wv.dispatchTouchEvent(down)
                 down.recycle()
                 mainHandler.postDelayed(Runnable {
-                    if (currentWebView !== wv) return@Runnable
                     try {
+                        if (currentWebView !== wv) return@Runnable
                         val upTime = SystemClock.uptimeMillis()
                         val up = MotionEvent.obtain(
                             downTime, upTime, MotionEvent.ACTION_UP, coord.x, coord.y, 0
                         )
                         wv.dispatchTouchEvent(up)
                         up.recycle()
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                    } finally {
+                        isAutoTapping = false
+                    }
                 }, AUTO_TAP_UP_DELAY_MS)
             } catch (_: Exception) {
                 // 自動タップ失敗は致命ではない（ユーザーが手動で操作可）
+                isAutoTapping = false
             }
             // 一定時間経過しても画面が閉じていなければ「失敗」フィードバックに切り替える
             mainHandler.postDelayed(Runnable {
