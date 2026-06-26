@@ -159,11 +159,42 @@ object ChallengeManager {
         if (challengeUrlPatterns.any { lowerUrl.contains(it) }) return true
         // reCAPTCHA 単独判定: body 文字数で「チャレンジ専用ページ」に限定
         if (hasRecaptchaIframe && visibleBodyLen in 0..RECAPTCHA_BODY_LEN_THRESHOLD) return true
+        // [2026-06-26] Google 検索 (SERP) で本文が極端に少ない = 自動化検出ブロックの兆候。
+        //   正常な SERP は本文 (innerText) 数千文字以上のため、閾値以下なら challenge 扱いし
+        //   ChallengeActivity を起動してユーザーに通知する（タイトル / URL が sorry 系に
+        //   遷移しないまま minimal レスポンスを返してくるパターンの捕捉）。
+        if (isGoogleSearchBlocked(url, visibleBodyLen)) return true
         return false
+    }
+
+    private fun isGoogleSearchBlocked(url: String, visibleBodyLen: Int): Boolean {
+        if (visibleBodyLen !in 0..GOOGLE_SEARCH_MIN_BODY_LEN) return false
+        val (host, path) = try {
+            val u = java.net.URI(url)
+            (u.host?.lowercase() to u.path?.lowercase())
+        } catch (_: Exception) { return false }
+        if (host == null || path == null) return false
+        if (!GOOGLE_SEARCH_HOSTS.contains(host)) return false
+        // [2026-06-26] Codex 指摘: /search/about 等の通常 Google ページを拾わないよう
+        //   path == "/search" 厳密一致のみ。SERP のサブパスでブロックされる観測が出てきたら拡張する。
+        return path == "/search"
     }
 
     /** reCAPTCHA iframe 単独判定の本文長閾値。これ以下なら「reCAPTCHA だけのページ」と判断 */
     private const val RECAPTCHA_BODY_LEN_THRESHOLD = 200
+
+    /**
+     * [2026-06-26] Google 検索 SERP の本文文字数下限 (innerText 基準)。
+     *   この値以下なら自動化ブロック疑い → challenge 扱い。
+     *   正常な SERP は最低でも数千文字あるため 800 は余裕がある（誤検知より検知漏れ重視）。
+     */
+    private const val GOOGLE_SEARCH_MIN_BODY_LEN = 800
+
+    /** Google 検索 SERP の対象ホスト (host のみ・厳密一致)。サブドメイン無しと www. の両方を許可。 */
+    private val GOOGLE_SEARCH_HOSTS = setOf(
+        "google.com", "www.google.com",
+        "google.co.jp", "www.google.co.jp",
+    )
 
     /**
      * [2026-06-26] Slack 通知を発射するまでの待機時間。
