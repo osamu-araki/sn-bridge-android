@@ -110,6 +110,20 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString("cloudflared_edge_ips", "") ?: ""
         set(value) = prefs.edit { putString("cloudflared_edge_ips", value) }
 
+    // [2026-06-26] Google サーキットブレーカー設定。GoogleSearchCircuitBreaker が参照する。
+    //   閾値・window・停止時間をユーザーが UI から変更できるようにする（運用に応じてチューニング可）。
+    var circuitFailureThreshold: Int
+        get() = prefs.getInt("circuit_failure_threshold", 3).coerceAtLeast(1)
+        set(value) = prefs.edit { putInt("circuit_failure_threshold", value.coerceAtLeast(1)) }
+
+    var circuitWindowMinutes: Int
+        get() = prefs.getInt("circuit_window_minutes", 5).coerceAtLeast(1)
+        set(value) = prefs.edit { putInt("circuit_window_minutes", value.coerceAtLeast(1)) }
+
+    var circuitTripMinutes: Int
+        get() = prefs.getInt("circuit_trip_minutes", 60).coerceAtLeast(1)
+        set(value) = prefs.edit { putInt("circuit_trip_minutes", value.coerceAtLeast(1)) }
+
     // [2026-06-26] チャレンジ検知時に「自動タップ memory が登録されているドメインだけ」画面を
     //   開くモード。OFF (デフォルト) なら従来通り全 challenge で画面起動。
     //   ON のときは memory が無いドメインは画面起動を拒否し、Slack 通知のみ飛ばして fetch は

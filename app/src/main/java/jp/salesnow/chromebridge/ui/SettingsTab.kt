@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import jp.salesnow.chromebridge.data.SettingsRepository
+import jp.salesnow.chromebridge.fetcher.GoogleSearchCircuitBreaker
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color
@@ -689,6 +690,136 @@ fun SettingsTab(
                         },
                     ) {
                         Text("保存")
+                    }
+                }
+            }
+        }
+
+        // [2026-06-26] Google サーキットブレーカー設定
+        item {
+            val ctx = LocalContext.current
+            val repo = remember { SettingsRepository(ctx) }
+            var thresholdInput by remember { mutableStateOf(repo.circuitFailureThreshold.toString()) }
+            var windowInput by remember { mutableStateOf(repo.circuitWindowMinutes.toString()) }
+            var tripInput by remember { mutableStateOf(repo.circuitTripMinutes.toString()) }
+            // 状態スナップショット表示（trip 中の host とその残り秒数）
+            var snapshotRefresh by remember { mutableIntStateOf(0) }
+            val snapshot = remember(snapshotRefresh) {
+                runCatching { GoogleSearchCircuitBreaker.snapshot() }.getOrDefault(emptyMap())
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Google サーキットブレーカー",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "Google 検索の極小レスポンス（403 等）を検知したら一定時間 fetch を 499 で拒否",
+                        fontSize = 11.sp,
+                        color = GrayLight,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = thresholdInput,
+                        onValueChange = { thresholdInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("失敗閾値（回）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = windowInput,
+                        onValueChange = { windowInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("集計 window（分）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tripInput,
+                        onValueChange = { tripInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("停止時間（分）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            repo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: 3
+                            repo.circuitWindowMinutes = windowInput.toIntOrNull() ?: 5
+                            repo.circuitTripMinutes = tripInput.toIntOrNull() ?: 60
+                            // [2026-06-26] Codex 指摘: 空欄 / 0 入力は repo 側で 1 に丸められるので
+                            //   保存後に input を再同期して UI 表示と実値のズレを防ぐ
+                            thresholdInput = repo.circuitFailureThreshold.toString()
+                            windowInput = repo.circuitWindowMinutes.toString()
+                            tripInput = repo.circuitTripMinutes.toString()
+                        },
+                    ) {
+                        Text("保存")
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Text("現在の状態", fontSize = 13.sp, color = NavyDark, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    if (snapshot.isEmpty()) {
+                        Text("停止中のホストはありません", fontSize = 12.sp, color = GrayLight)
+                    } else {
+                        for ((host, remainingMs) in snapshot) {
+                            val remainSec = ((remainingMs + 999) / 1000)
+                            val remainMin = remainSec / 60
+                            val displaySec = remainSec % 60
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(host, fontSize = 13.sp, color = NavyDark)
+                                    Text(
+                                        "残り ${remainMin}分${displaySec}秒",
+                                        fontSize = 11.sp,
+                                        color = GrayLight,
+                                    )
+                                }
+                                TextButton(onClick = {
+                                    GoogleSearchCircuitBreaker.reset(host)
+                                    snapshotRefresh++
+                                }) {
+                                    Text("即時解除", color = Teal, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { snapshotRefresh++ },
+                        ) {
+                            Text("再読込", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                GoogleSearchCircuitBreaker.reset()
+                                snapshotRefresh++
+                            },
+                        ) {
+                            Text("すべて解除", fontSize = 12.sp)
+                        }
                     }
                 }
             }

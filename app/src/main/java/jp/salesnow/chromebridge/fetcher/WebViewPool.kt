@@ -333,7 +333,7 @@ class WebViewPool(
                                 if (isGoogleBlocked) {
                                     val gHost = try { java.net.URI(pageUrl).host?.lowercase() } catch (_: Exception) { null }
                                     if (gHost != null) {
-                                        GoogleSearchCircuitBreaker.recordFailure(gHost)
+                                        GoogleSearchCircuitBreaker.recordFailure(context, gHost)
                                         val remaining = GoogleSearchCircuitBreaker.remainingTripMs(gHost)
                                         if (remaining > 0) {
                                             onLog("circuit tripped: host=$gHost trip=${remaining / 1000}s")
