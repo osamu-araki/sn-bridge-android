@@ -320,6 +320,8 @@ class ChallengeActivity : ComponentActivity() {
         private const val SAVE_WINDOW_MS = 10_000L
         // [2026-06-25] 自動タップ発火後、この時間経過しても画面が閉じていなければ
         //   ユーザーに「手動操作してください」とフィードバックする。
-        private const val AUTO_TAP_FAIL_FEEDBACK_MS = 5_000L
+        // [2026-06-26] reCAPTCHA 等の裏側検証が 5 秒では完走しないケースが多発したため 13 秒に延長。
+        //   attach から累計だと 2s + 13s = 15s 経過しても閉じない場合のみ「失敗」表示。
+        private const val AUTO_TAP_FAIL_FEEDBACK_MS = 13_000L
     }
 }

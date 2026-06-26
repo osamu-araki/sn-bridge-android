@@ -56,6 +56,15 @@ object ChallengeManager {
     @Volatile
     private var launchInFlight: Boolean = false
 
+    // [2026-06-26] Slack 通知の遅延発射用 Handler。
+    //   challenge 検知 → 即時通知だと自動タップで突破できたケースでもノイズが飛ぶため、
+    //   SLACK_NOTIFY_DELAY_MS 経過時点で queue がまだ残っていれば通知する。
+    //   1 ChallengeActivity セッション内で複数回飛ばないよう slackNotified フラグで防止。
+    private val slackHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile
+    private var slackNotified: Boolean = false
+    private var pendingSlackRunnable: Runnable? = null
+
     /** 後方互換: 一部のレガシーコード／ロックスクリーン処理で参照する Activity */
     val activity: android.app.Activity?
         get() = attachedActivity
@@ -157,6 +166,15 @@ object ChallengeManager {
     private const val RECAPTCHA_BODY_LEN_THRESHOLD = 200
 
     /**
+     * [2026-06-26] Slack 通知を発射するまでの待機時間。
+     *   challenge 検知 → この時間内に画面が閉じる（= 自動タップ or ユーザー手動操作で突破）
+     *   なら通知は飛ばない。Slack のノイズ削減目的。
+     *   ChallengeActivity の AUTO_TAP_FAIL_FEEDBACK_MS (13s + attach 2s) と整合する 12s に設定。
+     *   失敗フィードバックよりわずかに早く飛ばすことで「Slack 通知 = 端末確認が必要」を担保。
+     */
+    private const val SLACK_NOTIFY_DELAY_MS = 12_000L
+
+    /**
      * チャレンジ画面を表示する（または既に表示中なら順番待ちキューに追加）。
      * Activity が居なくなっている場合は queue が空でなくても再起動する。
      */
@@ -175,8 +193,10 @@ object ChallengeManager {
         }
 
         if (isNewToQueue) {
-            // [2026-06-10] Minor: 重複登録の場合は Slack 通知しないよう順序を入替え済み
-            notifySlackIfNeeded(context)
+            // [2026-06-26] Slack 通知を即時 → 遅延発射に変更。
+            //   SLACK_NOTIFY_DELAY_MS 経過時点で queue がまだ残っていれば通知。自動タップで
+            //   突破できた場合は queue が空になるので通知をスキップする。
+            scheduleDelayedSlackNotification(context)
         } else {
             android.util.Log.d(
                 "ChromeBridge",
@@ -202,6 +222,41 @@ object ChallengeManager {
         if (!launched) {
             // [2026-06-10] Codex 4 回目 Major: 直接起動・通知のいずれも失敗 → 次の show() を救う
             synchronized(lock) { launchInFlight = false }
+        }
+    }
+
+    /**
+     * [2026-06-26] Slack 通知の遅延発射スケジュール。
+     *   - SLACK_NOTIFY_DELAY_MS 経過時に queue がまだ残っていれば notifySlackIfNeeded() を呼ぶ。
+     *   - 同一セッションで既に通知済み (slackNotified=true) なら schedule しない。
+     *   - 既に schedule 済みの runnable は重複させない。
+     *   - dismiss(wv) で queue が空になった場合は cancelPendingSlackNotification() が呼ばれて取消。
+     */
+    private fun scheduleDelayedSlackNotification(context: Context) {
+        val appContext = context.applicationContext
+        synchronized(lock) {
+            if (slackNotified) return
+            if (pendingSlackRunnable != null) return
+            val r = Runnable {
+                val shouldFire = synchronized(lock) {
+                    pendingSlackRunnable = null
+                    val fire = !slackNotified && queue.isNotEmpty()
+                    if (fire) slackNotified = true
+                    fire
+                }
+                if (shouldFire) notifySlackIfNeeded(appContext)
+            }
+            pendingSlackRunnable = r
+            slackHandler.postDelayed(r, SLACK_NOTIFY_DELAY_MS)
+        }
+    }
+
+    /** queue が空になった (= challenge 全部解除) ときに、未発射の Slack 通知を取り消す。 */
+    private fun cancelPendingSlackNotification() {
+        synchronized(lock) {
+            pendingSlackRunnable?.let { slackHandler.removeCallbacks(it) }
+            pendingSlackRunnable = null
+            slackNotified = false
         }
     }
 
@@ -345,6 +400,8 @@ object ChallengeManager {
         (webView.parent as? ViewGroup)?.removeView(webView)
 
         if (becameEmpty) {
+            // [2026-06-26] 自動タップ等で突破できた = Slack 通知不要。
+            cancelPendingSlackNotification()
             act?.let { ctx ->
                 val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.cancel(NOTIFICATION_ID)
@@ -383,6 +440,10 @@ object ChallengeManager {
             onCurrentChanged = null
             lastContext = null
             launchInFlight = false
+            // [2026-06-26] 未発射の Slack 通知も残さない
+            pendingSlackRunnable?.let { slackHandler.removeCallbacks(it) }
+            pendingSlackRunnable = null
+            slackNotified = false
         }
     }
 
