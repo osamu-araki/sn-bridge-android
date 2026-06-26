@@ -457,13 +457,13 @@ fun SettingsTab(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        "チャレンジ自動タップ記憶",
+                        "画面表示",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                         color = NavyDark
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("チャレンジ画面の表示", fontSize = 13.sp, color = NavyDark, fontWeight = FontWeight.Bold)
+                    Text("Bridge 動作中の WebView 画面を表示するか", fontSize = 13.sp, color = NavyDark, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     val options = listOf(
                         Triple(
@@ -473,13 +473,13 @@ fun SettingsTab(
                         ),
                         Triple(
                             SettingsRepository.DISPLAY_MODE_EXCLUDE_HEALTHCHECK,
-                            "すべて表示（ヘルスチェック除外）",
+                            "チャレンジ認証すべてを表示（ヘルスチェック除外）",
                             "通常の challenge は画面表示。ポータル cron 由来は Slack 通知のみ",
                         ),
                         Triple(
                             SettingsRepository.DISPLAY_MODE_ALL,
                             "すべて表示",
-                            "全 challenge で画面を開く（従来挙動）",
+                            "challenge を含む全 fetch リクエストの WebView を画面表示（デバッグ・可視化用）",
                         ),
                     )
                     for ((mode, title, desc) in options) {

@@ -267,6 +267,10 @@ class WebViewPool(
         var pageError: String? = null
         val challengeDetected = AtomicBoolean(false)
         val challengeShown = AtomicBoolean(false)
+        // [2026-06-27] displayMode == ALL の場合は challenge 検知前から ChallengeActivity を
+        //   起動して WebView を可視化する（運用上「Bridge が今何を取りに行ってるか」を見せる）。
+        //   抽出完了 / タイムアウト時の dismiss 判定で challengeShown と OR する。
+        val alwaysShown = AtomicBoolean(false)
         // [2026-05-18] fetch 確定後に遅延コールバックが古い WebView を触らないためのフラグ
         val settled = AtomicBoolean(false)
         // [2026-04-12] チャレンジ計測用
@@ -355,12 +359,15 @@ class WebViewPool(
                         } else {
                             // 通常ページ → コンテンツ抽出
                             extracted = true
-                            // チャレンジ画面が出ていたら閉じる
+                            // チャレンジ画面 or 常時表示モードで開いていたら閉じる
                             if (challengeShown.get()) {
                                 val elapsed = System.currentTimeMillis() - challengeStartMs
                                 onLog("チャレンジ成功: domain=$challengeDomain ${elapsed}ms (worker=$workerId)")
                                 onChallengeResult(true)
                                 // [2026-06-10] Codex#4: 自分の WebView を明示指定して dismiss
+                                mainHandler.post { ChallengeManager.dismiss(wv) }
+                            } else if (alwaysShown.get()) {
+                                // [2026-06-27] displayMode==ALL で常時表示していた WebView を閉じる
                                 mainHandler.post { ChallengeManager.dismiss(wv) }
                             }
                             mainHandler.postDelayed({
@@ -406,7 +413,7 @@ class WebViewPool(
                     val crashed = detail?.didCrash() == true
                     pageError = "WebView レンダラ異常終了 (worker=$workerId, crashed=$crashed)"
                     onLog(pageError!!)
-                    if (challengeShown.get()) mainHandler.post { ChallengeManager.dismiss(wv) }
+                    if (challengeShown.get() || alwaysShown.get()) mainHandler.post { ChallengeManager.dismiss(wv) }
                     latch.countDown()
                     return true
                 }
@@ -422,6 +429,18 @@ class WebViewPool(
                     .defaultUserAgentOverride.takeIf { it.isNotBlank() }
             } catch (_: Exception) { null }
             wv.settings.userAgentString = requestedUa ?: configuredDefault ?: defaultUserAgent
+            // [2026-06-27] displayMode == ALL の場合、challenge 検知を待たずに最初から
+            //   ChallengeActivity を表示して WebView を可視化する。
+            try {
+                val displayMode = jp.salesnow.chromebridge.data.SettingsRepository(context)
+                    .challengeDisplayMode
+                if (displayMode == jp.salesnow.chromebridge.data.SettingsRepository.DISPLAY_MODE_ALL) {
+                    val shown = ChallengeManager.show(context, wv, request.purpose, alwaysShow = true)
+                    if (shown) alwaysShown.set(true)
+                }
+            } catch (_: Exception) {
+                // 設定読み込み失敗時は alwaysShow を諦めて通常 fetch を続行
+            }
             wv.loadUrl(request.url)
         }
 
@@ -445,12 +464,12 @@ class WebViewPool(
             )
         }
 
-        // タイムアウト時はチャレンジ画面も閉じる
+        // タイムアウト時はチャレンジ画面 / 常時表示画面も閉じる
         if (!completed) {
             mainHandler.post {
                 wv.stopLoading()
                 // [2026-06-10] Codex#4: 自分の WebView を明示指定して dismiss
-                if (challengeShown.get()) ChallengeManager.dismiss(wv)
+                if (challengeShown.get() || alwaysShown.get()) ChallengeManager.dismiss(wv)
             }
             val msg = if (challengeDetected.get()) {
                 val elapsed = System.currentTimeMillis() - challengeStartMs

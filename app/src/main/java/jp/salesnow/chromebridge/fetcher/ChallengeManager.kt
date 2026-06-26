@@ -39,6 +39,17 @@ object ChallengeManager {
     private val lock = Any()
     private val queue = ArrayDeque<WebView>()
 
+    // [2026-06-27] WebView ごとの表示モード。
+    //   Challenge: challenge 検知由来 → 自動タップ / tap memory 保存 / Slack 通知すべて有効
+    //   AlwaysShow: displayMode==ALL 由来の「全 fetch 可視化」 → 自動タップ / 保存 / 通知すべて無効
+    //   challenge が後から検知された場合は AlwaysShow → Challenge に昇格する。
+    enum class ShowMode { Challenge, AlwaysShow }
+    private val webViewModes = java.util.concurrent.ConcurrentHashMap<WebView, ShowMode>()
+
+    /** ChallengeActivity から「この WebView は challenge 用？」を問い合わせる API。 */
+    fun isChallengeMode(webView: WebView): Boolean =
+        webViewModes[webView] == ShowMode.Challenge
+
     // 直近の Activity 起動用 context。Activity が死亡しても queue が残っていれば再起動できるようにする
     @Volatile
     private var lastContext: Context? = null
@@ -222,14 +233,19 @@ object ChallengeManager {
      *
      * @return true = queue 登録 + 画面起動を進めた / false = 自動タップ専用モードで拒否
      */
-    fun show(context: Context, webView: WebView, purpose: String? = null): Boolean {
+    fun show(context: Context, webView: WebView, purpose: String? = null, alwaysShow: Boolean = false): Boolean {
         // [2026-06-26] このリクエストで invisible 起動を要求するか（lock 内で needsLaunch 確定時に反映）
         var requestInvisibleLaunch = false
         // [2026-06-26] 表示モード判定（lock 取得前にチェックして queue を汚さない）
         val repo = SettingsRepository(context)
         val displayMode = repo.challengeDisplayMode
 
-        when (displayMode) {
+        // [2026-06-27] alwaysShow=true は WebViewPool が「displayMode==ALL 時に fetch 開始から
+        //   画面表示する」用に呼ぶ経路。challenge 検知前なので displayMode 分岐は skip し、
+        //   通常表示パス（visible mode）に倒す。
+        if (alwaysShow) {
+            // 通常表示パスへ fall through（requestInvisibleLaunch は false のまま）
+        } else when (displayMode) {
             SettingsRepository.DISPLAY_MODE_MANUAL_ONLY -> {
                 val url = try { webView.url } catch (_: Exception) { null }
                 val domain = try {
@@ -261,6 +277,16 @@ object ChallengeManager {
             // SettingsRepository.DISPLAY_MODE_ALL: 何もしない（従来通り全 challenge で画面起動）
         }
 
+        // [2026-06-27] WebView の mode を決定。alwaysShow=true なら AlwaysShow、それ以外は Challenge。
+        //   同じ WebView の re-show でも、AlwaysShow → Challenge への昇格は許す（challenge 検知が
+        //   後から来たケース）。逆に Challenge → AlwaysShow には戻さない。
+        val newMode = if (alwaysShow) ShowMode.AlwaysShow else ShowMode.Challenge
+        val previousMode = webViewModes[webView]
+        if (previousMode != ShowMode.Challenge) {
+            webViewModes[webView] = newMode
+        }
+        val effectiveMode = webViewModes[webView] ?: newMode
+
         // [2026-06-10] Codex 3 回目:
         //   - 起動可否を「Activity 不在 AND launchInFlight=false AND queue 非空」で判定
         //   - 同じ WebView の re-show でも Activity 不在なら起動できるよう、alreadyQueued でも launch を走らせる
@@ -278,12 +304,19 @@ object ChallengeManager {
             Triple(needsLaunch, !already, queue.size)
         }
 
-        if (isNewToQueue) {
+        // [2026-06-27] Challenge mode の時だけ Slack 通知を schedule する。AlwaysShow（全 fetch 可視化）は
+        //   ノイズになるので通知しない。AlwaysShow → Challenge 昇格時は新規 queue 追加じゃないが
+        //   通知が必要なので、isNewToQueue とは独立に effectiveMode で判定する。
+        val shouldNotifySlack = effectiveMode == ShowMode.Challenge &&
+            (isNewToQueue || previousMode == ShowMode.AlwaysShow)
+
+        if (shouldNotifySlack) {
             // [2026-06-26] Slack 通知を即時 → 遅延発射に変更。
             //   SLACK_NOTIFY_DELAY_MS 経過時点で queue がまだ残っていれば通知。自動タップで
             //   突破できた場合は queue が空になるので通知をスキップする。
+            // [2026-06-27] AlwaysShow（全 fetch 可視化）は通知 schedule しない。
             scheduleDelayedSlackNotification(context)
-        } else {
+        } else if (!isNewToQueue) {
             android.util.Log.d(
                 "ChromeBridge",
                 "ChallengeManager: 同じ WebView の show() 呼び出しを無視（既にキュー登録済み、queue=$queueSize）"
@@ -452,7 +485,7 @@ object ChallengeManager {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setContentTitle("認証が必要です")
+            .setContentTitle("Bridge 動作中")
             .setContentText("タップして認証画面を開いてください")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -509,6 +542,9 @@ object ChallengeManager {
         } else if (wasHead) {
             callback?.invoke(nextHead)
         }
+        // [2026-06-27] Codex 指摘: callback 内の persistLastTapIfAny は isChallengeMode を
+        //   読むため、mode の remove は callback 完了後に行う。
+        webViewModes.remove(webView)
     }
 
     /**
@@ -542,6 +578,8 @@ object ChallengeManager {
             pendingSlackRunnable?.let { slackHandler.removeCallbacks(it) }
             pendingSlackRunnable = null
             slackNotified = false
+            // [2026-06-27] WebView mode マップもクリア
+            webViewModes.clear()
         }
     }
 

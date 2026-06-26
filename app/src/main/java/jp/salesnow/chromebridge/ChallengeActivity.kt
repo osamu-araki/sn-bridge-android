@@ -105,14 +105,14 @@ class ChallengeActivity : ComponentActivity() {
                 setPadding(48, 48, 48, 48)
 
                 addView(TextView(this@ChallengeActivity).apply {
-                    text = "認証が必要です"
+                    text = "Bridge 動作中"
                     textSize = 18f
                     setTextColor(0xFFFFFFFF.toInt())
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
                 })
 
                 addView(TextView(this@ChallengeActivity).apply {
-                    text = "下の画面で認証を完了してください。完了後、自動的に閉じます。"
+                    text = "ページ取得中です。完了後、自動的に閉じます。認証が必要な場合は下の画面で操作してください。"
                     textSize = 13f
                     setTextColor(0xCCFFFFFF.toInt())
                     setPadding(0, 12, 0, 0)
@@ -168,7 +168,11 @@ class ChallengeActivity : ComponentActivity() {
         val d = lastTapDomain
         val sinceTap = System.currentTimeMillis() - lastTapAtMs
         val recent = lastTapAtMs > 0 && sinceTap in 0..SAVE_WINDOW_MS
-        if (x != null && y != null && !d.isNullOrBlank() && recent &&
+        // [2026-06-27] AlwaysShow mode（通常 fetch 可視化）の WebView ではタップを保存しない
+        //   ＝ 通常ページのユーザー操作で tap memory が汚染されるのを防ぐ
+        val wv = currentWebView
+        val isChallengeWebView = wv != null && ChallengeManager.isChallengeMode(wv)
+        if (x != null && y != null && !d.isNullOrBlank() && recent && isChallengeWebView &&
             x.isFinite() && y.isFinite() && x >= 0f && y >= 0f
         ) {
             try {
@@ -201,7 +205,10 @@ class ChallengeActivity : ComponentActivity() {
         tapAlreadyCaptured = false
         installTapCaptureListener(wv)
         // 新しい WebView を表示するときは「失敗」状態をクリア
-        setSubtitle("下の画面で認証を完了してください。完了後、自動的に閉じます。", warn = false)
+        setSubtitle(
+            "ページ取得中です。完了後、自動的に閉じます。認証が必要な場合は下の画面で操作してください。",
+            warn = false,
+        )
         scheduleAutoTap(wv)
     }
 
@@ -244,6 +251,11 @@ class ChallengeActivity : ComponentActivity() {
      * 「手動でタップしてください」に切り替えて従来通り人間に処理を委ねる。
      */
     private fun scheduleAutoTap(wv: WebView) {
+        // [2026-06-27] AlwaysShow mode（通常 fetch 可視化）では自動タップしない。
+        //   保存済み座標が DOM 状態を変えてしまう副作用を避ける。
+        if (!ChallengeManager.isChallengeMode(wv)) {
+            return
+        }
         // [2026-06-26] Codex 指摘 #3: 自動タップ前提条件 NG の early return パスで invisible のまま
         //   戻らない事を防ぐ。memory 不在 / 不正座標時は可視化してユーザーに気付かせる。
         val domain = lastTapDomain ?: run {
