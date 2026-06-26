@@ -167,7 +167,8 @@ object ChallengeManager {
         return false
     }
 
-    private fun isGoogleSearchBlocked(url: String, visibleBodyLen: Int): Boolean {
+    /** WebViewPool が CircuitBreaker 連携で利用するため public 化。 */
+    fun isGoogleSearchBlocked(url: String, visibleBodyLen: Int): Boolean {
         if (visibleBodyLen !in 0..GOOGLE_SEARCH_MIN_BODY_LEN) return false
         val (host, path) = try {
             val u = java.net.URI(url)

@@ -184,6 +184,19 @@ class WebViewPool(
         // [2026-05-18] 欠損があれば非同期でプールを補充（トラフィック時に自己回復）
         maybeReplenish()
 
+        // [2026-06-26] Google サーキットブレーカーが open なら即拒否（HTTP 層で 499 に変換）
+        val urlHost = try { java.net.URI(request.url).host?.lowercase() } catch (_: Exception) { null }
+        if (urlHost != null && GoogleSearchCircuitBreaker.isOpen(urlHost)) {
+            val remainingMs = GoogleSearchCircuitBreaker.remainingTripMs(urlHost)
+            // [2026-06-26] Codex 指摘: 切り捨てで 0 になりクライアントが即リトライしないよう ceil
+            val remainingSec = ((remainingMs + 999) / 1000).coerceAtLeast(0)
+            onLog("circuit open: host=$urlHost remaining=${remainingSec}s → 499")
+            return FetchResult(
+                ok = false, error = "circuit_open",
+                message = "Google 検索のサーキットブレーカーが開いています。残り ${remainingSec} 秒"
+            )
+        }
+
         // [2026-06-26] 同一ホストへの最小リクエスト間隔 throttle
         if (!applyHostThrottleIfNeeded(request.url)) {
             return FetchResult(
@@ -306,13 +319,27 @@ class WebViewPool(
                             if (!challengeShown.getAndSet(true)) {
                                 challengeStartMs = System.currentTimeMillis()
                                 val lowerUrl = pageUrl.lowercase()
+                                val isGoogleBlocked = ChallengeManager.isGoogleSearchBlocked(pageUrl, bodyLen)
                                 val kind = when {
                                     lowerUrl.contains("google.com/sorry") ||
                                         lowerUrl.contains("google.co.jp/sorry") -> "Google sorry"
+                                    isGoogleBlocked -> "Google blocked SERP"
                                     hasRecaptcha -> "reCAPTCHA iframe"
                                     else -> "title"
                                 }
                                 onLog("チャレンジ検知 [$kind]: domain=$challengeDomain title=\"$title\" url=\"$pageUrl\" (worker=$workerId)")
+                                // [2026-06-26] Google 検索の極小レスポンス (403 等) はサーキットブレーカーに記録。
+                                //   N 回 / 5 分で trip し、以降の fetch は 499 で即拒否される。
+                                if (isGoogleBlocked) {
+                                    val gHost = try { java.net.URI(pageUrl).host?.lowercase() } catch (_: Exception) { null }
+                                    if (gHost != null) {
+                                        GoogleSearchCircuitBreaker.recordFailure(gHost)
+                                        val remaining = GoogleSearchCircuitBreaker.remainingTripMs(gHost)
+                                        if (remaining > 0) {
+                                            onLog("circuit tripped: host=$gHost trip=${remaining / 1000}s")
+                                        }
+                                    }
+                                }
                                 ChallengeManager.show(context, wv)
                             }
                             // latch は countDown しない → ユーザーの操作を待つ

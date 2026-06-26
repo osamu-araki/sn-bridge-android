@@ -61,6 +61,14 @@ class BridgeHttpServer(
         override fun getDescription(): String = "413 Payload Too Large"
     }
 
+    // [2026-06-26] Circuit Breaker open 用の non-standard 499。
+    //   Google が IP/UA 単位でクライアントを 403 永続ブロックする事例に対する保護。
+    //   Bridge が短時間に同 host への失敗を閾値超え検知したら一定時間 fetch を即拒否する。
+    private val statusCircuitOpen = object : NanoHTTPD.Response.IStatus {
+        override fun getRequestStatus(): Int = 499
+        override fun getDescription(): String = "499 Circuit Open"
+    }
+
     companion object {
         // [2026-06-10] Codex#3: バリデーション・上限定数
         const val MAX_REQUEST_BODY_BYTES = 256 * 1024  // 256 KB
@@ -332,13 +340,22 @@ class BridgeHttpServer(
                 val (status, retryable, category) = classifyError(errCode)
                 onLog("エラー: $url — $errCode (${elapsed}ms, status=${status.requestStatus})")
 
-                val errorResp = mapOf<String, Any?>(
+                val errorResp = mutableMapOf<String, Any?>(
                     "ok" to false,
                     "error" to errCode,
                     "message" to (fetchResult.message ?: ""),
                     "retryable" to retryable,
                     "category" to category
                 )
+                // [2026-06-26] circuit_open は remaining_seconds をクライアントが利用するため添付
+                if (errCode == "circuit_open") {
+                    val host = try { java.net.URI(url).host?.lowercase() } catch (_: Exception) { null }
+                    val remainingMs = if (host != null)
+                        jp.salesnow.chromebridge.fetcher.GoogleSearchCircuitBreaker.remainingTripMs(host)
+                    else 0L
+                    // Codex 指摘: 切り捨てで 0 になるとクライアントが即リトライしてしまうため ceil
+                    errorResp["remaining_seconds"] = ((remainingMs + 999) / 1000).coerceAtLeast(0)
+                }
                 val responseJson = gson.toJson(errorResp)
                 statsCollector?.record(RequestMetrics(
                     url = url,
@@ -394,6 +411,12 @@ class BridgeHttpServer(
         when (error) {
             // Bridge 自身の一時的な過負荷・障害 → 503（リトライ可）
             "pool_busy", "server_busy", "renderer_gone", "internal_error" ->
+                Triple(statusServiceUnavailable, true, "bridge")
+            // [2026-06-26] Google サーキットブレーカー open → 499（しばらく停止中）
+            "circuit_open" ->
+                Triple(statusCircuitOpen, false, "blocked")
+            // [2026-06-26] throttle 待機中の割り込み → 503（リトライ可）
+            "interrupted" ->
                 Triple(statusServiceUnavailable, true, "bridge")
             // 対象 URL 個別の取得失敗 → 200 + ok:false（リトライ可、要判定）
             "timeout", "fetch_failed" ->
