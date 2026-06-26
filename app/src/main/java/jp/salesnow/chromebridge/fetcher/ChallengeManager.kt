@@ -56,6 +56,12 @@ object ChallengeManager {
     @Volatile
     private var launchInFlight: Boolean = false
 
+    // [2026-06-26] 次に起動する ChallengeActivity を invisible mode で開くか。
+    //   show() で memory ありの自動タップ突破を試したい時に true。launchActivity が
+    //   Intent extra として渡したら false に戻す（1 起動ごとに消費）。
+    @Volatile
+    private var nextLaunchInvisible: Boolean = false
+
     // [2026-06-26] Slack 通知の遅延発射用 Handler。
     //   challenge 検知 → 即時通知だと自動タップで突破できたケースでもノイズが飛ぶため、
     //   SLACK_NOTIFY_DELAY_MS 経過時点で queue がまだ残っていれば通知する。
@@ -217,6 +223,8 @@ object ChallengeManager {
      * @return true = queue 登録 + 画面起動を進めた / false = 自動タップ専用モードで拒否
      */
     fun show(context: Context, webView: WebView): Boolean {
+        // [2026-06-26] このリクエストで invisible 起動を要求するか（lock 内で needsLaunch 確定時に反映）
+        var requestInvisibleLaunch = false
         // [2026-06-26] 自動タップ専用モード判定（lock 取得前にチェックして queue を汚さない）
         val repo = SettingsRepository(context)
         if (repo.challengeAutoTapOnlyMode) {
@@ -236,6 +244,12 @@ object ChallengeManager {
                 notifySlackIfNeeded(context)
                 return false
             }
+            // [2026-06-26] memory あり + 自動タップ専用モード = ユーザーは画面に出てきてほしくない。
+            //   ChallengeActivity を invisible mode で起動して、自動タップが効けば誰にも気付かれずに
+            //   finish する。失敗したら ChallengeActivity 側で可視化する。
+            //   nextLaunchInvisible のセットは下の lock 内で needsLaunch 確定時に行う (Codex 指摘 #2)。
+            // memo: 後続 lock 内で invisible 判定したいのでローカル変数で覚える。
+            requestInvisibleLaunch = true
         }
 
         // [2026-06-10] Codex 3 回目:
@@ -247,7 +261,11 @@ object ChallengeManager {
             if (!already) queue.addLast(webView)
             lastContext = context.applicationContext
             val needsLaunch = attachedActivity == null && !launchInFlight && queue.isNotEmpty()
-            if (needsLaunch) launchInFlight = true
+            if (needsLaunch) {
+                launchInFlight = true
+                // [2026-06-26] needsLaunch 確定時にのみ invisible mode を反映（Codex 指摘 #2 race 対策）
+                nextLaunchInvisible = requestInvisibleLaunch
+            }
             Triple(needsLaunch, !already, queue.size)
         }
 
@@ -372,10 +390,19 @@ object ChallengeManager {
      * [2026-06-10] Codex 4 回目 Major: false が返ったら show() 側で launchInFlight をリセット。
      */
     private fun launchActivity(context: Context): Boolean {
+        // [2026-06-26] invisible mode フラグを 1 起動ごとに消費（次の show 用に false に戻す）
+        //   lock 内で atomic に read-modify-write し、show() 側の書き込みとの race を防ぐ。
+        val invisible = synchronized(lock) {
+            val v = nextLaunchInvisible
+            nextLaunchInvisible = false
+            v
+        }
+
         // [2026-04-11] SYSTEM_ALERT_WINDOW 権限があれば通知をスキップして直接起動
         if (android.provider.Settings.canDrawOverlays(context)) {
             val intent = Intent(context, Class.forName("jp.salesnow.chromebridge.ChallengeActivity"))
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            intent.putExtra("jp.salesnow.chromebridge.EXTRA_INVISIBLE_MODE", invisible)
             try {
                 context.startActivity(intent)
                 return true
@@ -390,6 +417,7 @@ object ChallengeManager {
         if (!useNotify) {
             val intent = Intent(context, Class.forName("jp.salesnow.chromebridge.ChallengeActivity"))
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            intent.putExtra("jp.salesnow.chromebridge.EXTRA_INVISIBLE_MODE", invisible)
             return try {
                 context.startActivity(intent)
                 true
@@ -407,6 +435,7 @@ object ChallengeManager {
             Intent.FLAG_ACTIVITY_SINGLE_TOP or
             Intent.FLAG_ACTIVITY_CLEAR_TOP
         )
+        intent.putExtra("jp.salesnow.chromebridge.EXTRA_INVISIBLE_MODE", invisible)
 
         val fullScreenIntent = PendingIntent.getActivity(
             context, 0, intent,

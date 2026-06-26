@@ -1,4 +1,7 @@
-// Version: 2.2.0 | Updated: 2026-06-25
+// Version: 2.3.0 | Updated: 2026-06-26
+// [2026-06-26] invisible mode を追加。自動タップ memory がある domain は最初から alpha=0 +
+//   タッチ不透過で起動 → 自動タップで突破できればユーザー無感で終了。失敗時のみ
+//   AUTO_TAP_FAIL_FEEDBACK_MS 経過後に可視化して手動操作を促す。
 // [2026-03-13] Cloudflare チャレンジ等の手動認証画面
 // [2026-03-13] ロック画面・バックグラウンドからの表示対応
 // [2026-06-10] Codex#4: ChallengeManager のキュー対応に追従。head 切替時に WebView を差し替える。
@@ -40,6 +43,9 @@ class ChallengeActivity : ComponentActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     // [2026-06-25] ヘッダー右側のステータステキスト（自動タップ試行中 / 失敗）
     private var subtitleText: TextView? = null
+    // [2026-06-26] invisible mode: 自動タップ memory がある時に最初から非表示で開く。
+    //   自動タップ成功なら誰にも気付かれずに finish、失敗時のみ revealAsVisible() で可視化。
+    private var invisibleMode = false
 
     // [2026-06-25] 現在の WebView 上でユーザーが最後にタップした座標。
     //   dismiss された（= challenge 通過した）タイミングでドメイン別に保存する。
@@ -60,19 +66,29 @@ class ChallengeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // [2026-03-13] ロック画面上に表示 + 画面をオンにする
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-            val km = getSystemService(KeyguardManager::class.java)
-            km?.requestDismissKeyguard(this, null)
+        // [2026-06-26] invisible mode フラグを読む。memory ありの自動タップを試す前提なので
+        //   画面を最初から完全透明 + タッチ非透過にし、成功なら誰にも気付かれずに finish。
+        invisibleMode = intent.getBooleanExtra(EXTRA_INVISIBLE_MODE, false)
+        if (invisibleMode) {
+            applyInvisibleWindow()
         } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-            )
+            // [2026-06-26] Codex 指摘 #1: invisible 中は画面オン / ロック解除を呼ばない。
+            //   自動タップ突破中はバックグラウンドのまま、画面を点けずに終了させる。
+            //   失敗で revealAsVisible() に入った時に setShowWhenLocked 等を後付けする。
+            // [2026-03-13] ロック画面上に表示 + 画面をオンにする
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+                val km = getSystemService(KeyguardManager::class.java)
+                km?.requestDismissKeyguard(this, null)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                )
+            }
         }
 
         // [2026-06-10] container を先に作る（callback が container を参照するため）
@@ -228,12 +244,26 @@ class ChallengeActivity : ComponentActivity() {
      * 「手動でタップしてください」に切り替えて従来通り人間に処理を委ねる。
      */
     private fun scheduleAutoTap(wv: WebView) {
-        val domain = lastTapDomain ?: return
+        // [2026-06-26] Codex 指摘 #3: 自動タップ前提条件 NG の early return パスで invisible のまま
+        //   戻らない事を防ぐ。memory 不在 / 不正座標時は可視化してユーザーに気付かせる。
+        val domain = lastTapDomain ?: run {
+            revealAsVisible()
+            setSubtitle("ドメインを判定できませんでした。手動でタップしてください。", warn = true)
+            return
+        }
         val coord = try {
             SettingsRepository(this).getTapMemory(domain)
-        } catch (_: Exception) { null } ?: return
+        } catch (_: Exception) { null } ?: run {
+            revealAsVisible()
+            setSubtitle("自動タップ memory が見つかりません。手動でタップしてください。", warn = true)
+            return
+        }
         // Codex 指摘: 壊れた値 (NaN / 負数) は捨てる。WebView 外座標も発火しても無害だが省く。
-        if (!coord.x.isFinite() || !coord.y.isFinite() || coord.x < 0f || coord.y < 0f) return
+        if (!coord.x.isFinite() || !coord.y.isFinite() || coord.x < 0f || coord.y < 0f) {
+            revealAsVisible()
+            setSubtitle("保存済み座標が不正です。手動でタップしてください。", warn = true)
+            return
+        }
 
         // 試行中であることを UI で示す
         setSubtitle("保存済みの座標で自動タップを試行中…", warn = false)
@@ -247,6 +277,8 @@ class ChallengeActivity : ComponentActivity() {
             if (w > 0 && h > 0 && (coord.x > w.toFloat() || coord.y > h.toFloat())) {
                 // Codex 指摘: bounds NG で early return すると「試行中…」のまま固定されるので
                 //   ここで失敗フィードバックに切り替えてから return する。
+                // [2026-06-26] invisible mode なら可視化（ユーザーに気付かせる）
+                revealAsVisible()
                 setSubtitle("保存済み座標が画面外のため自動タップできません。手動でタップしてください。", warn = true)
                 return@Runnable
             }
@@ -281,9 +313,56 @@ class ChallengeActivity : ComponentActivity() {
             // 一定時間経過しても画面が閉じていなければ「失敗」フィードバックに切り替える
             mainHandler.postDelayed(Runnable {
                 if (currentWebView !== wv) return@Runnable
+                // [2026-06-26] invisible mode で起動していた場合は、この時点で可視化して
+                //   手動操作を促す（自動タップで突破できなかったので人間に任せる）
+                revealAsVisible()
                 setSubtitle("自動タップでは通過できませんでした。手動でタップしてください。", warn = true)
             }, AUTO_TAP_FAIL_FEEDBACK_MS)
         }, AUTO_TAP_DOWN_DELAY_MS)
+    }
+
+    /**
+     * [2026-06-26] invisible mode: 完全透明 + タッチイベントを後ろの画面に素通しさせる。
+     *   ロック画面表示 / TURN_SCREEN_ON は付けない（バックグラウンドで突破するため画面を点ける必要がない）。
+     *   width/height は MATCH_PARENT で WebView レイアウトを動かしておく（自動タップが effective に動く）。
+     */
+    private fun applyInvisibleWindow() {
+        val w = window
+        w.attributes = w.attributes.apply { alpha = 0f }
+        // タッチを後ろのアプリに素通し（自動タップは dispatchTouchEvent でプログラム的に呼ぶので問題ない）
+        w.addFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        )
+        // ロック画面起動 / 画面オンの flag は付けない（不可視なので画面を点ける必要がない）
+    }
+
+    /** 自動タップで突破できなかった時に呼ぶ。invisible だった window を visible に戻す。 */
+    private fun revealAsVisible() {
+        if (!invisibleMode) return
+        invisibleMode = false
+        runOnUiThread {
+            val w = window
+            w.attributes = w.attributes.apply { alpha = 1f }
+            w.clearFlags(
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            )
+            // 可視化したタイミングで画面をオン + ロック解除（ユーザーに気付かせる）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+                val km = getSystemService(KeyguardManager::class.java)
+                km?.requestDismissKeyguard(this@ChallengeActivity, null)
+            } else {
+                @Suppress("DEPRECATION")
+                w.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                )
+            }
+        }
     }
 
     /** ヘッダー下のステータステキストを更新する。warn=true なら橙系で強調表示。 */
@@ -323,5 +402,9 @@ class ChallengeActivity : ComponentActivity() {
         // [2026-06-26] reCAPTCHA 等の裏側検証が 5 秒では完走しないケースが多発したため 13 秒に延長。
         //   attach から累計だと 2s + 13s = 15s 経過しても閉じない場合のみ「失敗」表示。
         private const val AUTO_TAP_FAIL_FEEDBACK_MS = 13_000L
+
+        // [2026-06-26] ChallengeManager.launchActivity から受け取る invisible mode フラグ。
+        //   true なら alpha=0 + タッチ非透過で起動。失敗時に可視化される。
+        const val EXTRA_INVISIBLE_MODE = "jp.salesnow.chromebridge.EXTRA_INVISIBLE_MODE"
     }
 }
