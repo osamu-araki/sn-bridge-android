@@ -110,6 +110,14 @@ class SettingsRepository(context: Context) {
         get() = prefs.getString("cloudflared_edge_ips", "") ?: ""
         set(value) = prefs.edit { putString("cloudflared_edge_ips", value) }
 
+    // [2026-06-26] チャレンジ検知時に「自動タップ memory が登録されているドメインだけ」画面を
+    //   開くモード。OFF (デフォルト) なら従来通り全 challenge で画面起動。
+    //   ON のときは memory が無いドメインは画面起動を拒否し、Slack 通知のみ飛ばして fetch は
+    //   通常タイムアウトに任せる（手動操作を期待しない運用向け）。
+    var challengeAutoTapOnlyMode: Boolean
+        get() = prefs.getBoolean("challenge_auto_tap_only_mode", false)
+        set(value) = prefs.edit { putBoolean("challenge_auto_tap_only_mode", value) }
+
     // [2026-06-26] Bridge が WebView で外部 URL を fetch する際のデフォルト User-Agent。
     //   空文字なら WebView 既定の Android UA を使用（従来挙動）。Google 等で `; wv` を含む
     //   WebView UA が flag されやすいため、デスクトップ Chrome UA に差し替えて回避する。

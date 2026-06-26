@@ -340,9 +340,18 @@ class WebViewPool(
                                         }
                                     }
                                 }
-                                ChallengeManager.show(context, wv)
+                                val shown = ChallengeManager.show(context, wv)
+                                if (!shown) {
+                                    // [2026-06-26] 自動タップ専用モード + memory なしで画面起動を
+                                    //   拒否されたケース。手動操作が来ない前提なので challenge 経路を
+                                    //   閉じ、通常タイムアウト経路に倒す（challengeExtraTimeout 待ちしない）。
+                                    challengeDetected.set(false)
+                                    challengeShown.set(false)
+                                    onLog("チャレンジ画面起動 拒否（自動タップ memory 無し）: domain=$challengeDomain (worker=$workerId)")
+                                }
                             }
                             // latch は countDown しない → ユーザーの操作を待つ
+                            //   ただし shown=false の場合は通常タイムアウト後に処理される
                         } else {
                             // 通常ページ → コンテンツ抽出
                             extracted = true

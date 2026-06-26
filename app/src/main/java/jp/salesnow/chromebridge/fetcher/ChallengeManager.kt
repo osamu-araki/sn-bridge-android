@@ -209,8 +209,35 @@ object ChallengeManager {
     /**
      * チャレンジ画面を表示する（または既に表示中なら順番待ちキューに追加）。
      * Activity が居なくなっている場合は queue が空でなくても再起動する。
+     *
+     * [2026-06-26] 自動タップ専用モード（SettingsRepository.challengeAutoTapOnlyMode = true）
+     * の場合、当該 WebView の URL から取り出した domain に tap memory が登録されていない
+     * ときは画面起動を拒否し、Slack 通知だけ schedule する。手動操作を期待しない運用向け。
+     *
+     * @return true = queue 登録 + 画面起動を進めた / false = 自動タップ専用モードで拒否
      */
-    fun show(context: Context, webView: WebView) {
+    fun show(context: Context, webView: WebView): Boolean {
+        // [2026-06-26] 自動タップ専用モード判定（lock 取得前にチェックして queue を汚さない）
+        val repo = SettingsRepository(context)
+        if (repo.challengeAutoTapOnlyMode) {
+            val url = try { webView.url } catch (_: Exception) { null }
+            val domain = try {
+                url?.let { java.net.URI(it).host?.lowercase() }
+            } catch (_: Exception) { null }
+            val hasMemory = domain != null && repo.getTapMemory(domain) != null
+            if (!hasMemory) {
+                android.util.Log.d(
+                    "ChromeBridge",
+                    "ChallengeManager: 自動タップ専用モード + memory なし → 画面起動を拒否 (domain=$domain)"
+                )
+                // [2026-06-26] Codex 指摘: scheduleDelayedSlackNotification は queue.isNotEmpty()
+                //   を条件にしているが、ここでは queue に追加しないため遅延発射しても飛ばない。
+                //   仕様「memory 無しは Slack 通知だけ」を守るため、ここでは直接通知を送る。
+                notifySlackIfNeeded(context)
+                return false
+            }
+        }
+
         // [2026-06-10] Codex 3 回目:
         //   - 起動可否を「Activity 不在 AND launchInFlight=false AND queue 非空」で判定
         //   - 同じ WebView の re-show でも Activity 不在なら起動できるよう、alreadyQueued でも launch を走らせる
@@ -241,7 +268,7 @@ object ChallengeManager {
                 "ChromeBridge",
                 "ChallengeManager: Activity 既存または起動中（queue=$queueSize）"
             )
-            return
+            return true
         }
 
         val launched = try {
@@ -255,6 +282,7 @@ object ChallengeManager {
             // [2026-06-10] Codex 4 回目 Major: 直接起動・通知のいずれも失敗 → 次の show() を救う
             synchronized(lock) { launchInFlight = false }
         }
+        return true
     }
 
     /**

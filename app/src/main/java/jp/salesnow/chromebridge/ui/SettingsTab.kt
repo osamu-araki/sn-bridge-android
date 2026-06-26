@@ -438,11 +438,14 @@ fun SettingsTab(
         // [2026-06-25] チャレンジ自動タップ記憶（ドメイン別の学習一覧 + 削除）
         item {
             val ctx = LocalContext.current
+            val repo = remember { SettingsRepository(ctx) }
             // refreshTrigger を Int でカウントアップして強制 re-compose
             var refreshTrigger by remember { mutableIntStateOf(0) }
             val entries = remember(refreshTrigger) {
-                runCatching { SettingsRepository(ctx).listTapMemoryEntries() }.getOrDefault(emptyList())
+                runCatching { repo.listTapMemoryEntries() }.getOrDefault(emptyList())
             }
+            // [2026-06-26] 自動タップ専用モードのトグル
+            var autoTapOnlyMode by remember { mutableStateOf(repo.challengeAutoTapOnlyMode) }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -455,6 +458,27 @@ fun SettingsTab(
                         fontSize = 16.sp,
                         color = NavyDark
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("自動タップ memory がある時だけ画面を開く", fontSize = 13.sp, color = NavyDark)
+                            Text(
+                                "OFF: 全 challenge で画面を開く / ON: memory 無しは Slack 通知のみ",
+                                fontSize = 11.sp,
+                                color = GrayLight,
+                            )
+                        }
+                        Switch(
+                            checked = autoTapOnlyMode,
+                            onCheckedChange = {
+                                autoTapOnlyMode = it
+                                repo.challengeAutoTapOnlyMode = it
+                            },
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     if (entries.isEmpty()) {
                         Text("学習データはありません", fontSize = 12.sp, color = GrayLight)
@@ -479,7 +503,7 @@ fun SettingsTab(
                                     )
                                 }
                                 TextButton(onClick = {
-                                    SettingsRepository(ctx).clearTapMemory(domain)
+                                    repo.clearTapMemory(domain)
                                     refreshTrigger++
                                 }) {
                                     Text("削除", color = Teal, fontSize = 12.sp)
@@ -490,7 +514,7 @@ fun SettingsTab(
                         Spacer(Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = {
-                                SettingsRepository(ctx).clearTapMemory()
+                                repo.clearTapMemory()
                                 refreshTrigger++
                             },
                             modifier = Modifier.fillMaxWidth(),
