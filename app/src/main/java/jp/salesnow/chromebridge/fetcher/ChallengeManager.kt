@@ -222,34 +222,43 @@ object ChallengeManager {
      *
      * @return true = queue 登録 + 画面起動を進めた / false = 自動タップ専用モードで拒否
      */
-    fun show(context: Context, webView: WebView): Boolean {
+    fun show(context: Context, webView: WebView, purpose: String? = null): Boolean {
         // [2026-06-26] このリクエストで invisible 起動を要求するか（lock 内で needsLaunch 確定時に反映）
         var requestInvisibleLaunch = false
-        // [2026-06-26] 自動タップ専用モード判定（lock 取得前にチェックして queue を汚さない）
+        // [2026-06-26] 表示モード判定（lock 取得前にチェックして queue を汚さない）
         val repo = SettingsRepository(context)
-        if (repo.challengeAutoTapOnlyMode) {
-            val url = try { webView.url } catch (_: Exception) { null }
-            val domain = try {
-                url?.let { java.net.URI(it).host?.lowercase() }
-            } catch (_: Exception) { null }
-            val hasMemory = domain != null && repo.getTapMemory(domain) != null
-            if (!hasMemory) {
-                android.util.Log.d(
-                    "ChromeBridge",
-                    "ChallengeManager: 自動タップ専用モード + memory なし → 画面起動を拒否 (domain=$domain)"
-                )
-                // [2026-06-26] Codex 指摘: scheduleDelayedSlackNotification は queue.isNotEmpty()
-                //   を条件にしているが、ここでは queue に追加しないため遅延発射しても飛ばない。
-                //   仕様「memory 無しは Slack 通知だけ」を守るため、ここでは直接通知を送る。
-                notifySlackIfNeeded(context)
-                return false
+        val displayMode = repo.challengeDisplayMode
+
+        when (displayMode) {
+            SettingsRepository.DISPLAY_MODE_MANUAL_ONLY -> {
+                val url = try { webView.url } catch (_: Exception) { null }
+                val domain = try {
+                    url?.let { java.net.URI(it).host?.lowercase() }
+                } catch (_: Exception) { null }
+                val hasMemory = domain != null && repo.getTapMemory(domain) != null
+                if (!hasMemory) {
+                    android.util.Log.d(
+                        "ChromeBridge",
+                        "ChallengeManager: MANUAL_ONLY + memory なし → 画面起動を拒否 (domain=$domain, purpose=$purpose)"
+                    )
+                    notifySlackIfNeeded(context)
+                    return false
+                }
+                // memory あり → invisible mode で起動（自動タップで突破、失敗時に可視化）
+                requestInvisibleLaunch = true
             }
-            // [2026-06-26] memory あり + 自動タップ専用モード = ユーザーは画面に出てきてほしくない。
-            //   ChallengeActivity を invisible mode で起動して、自動タップが効けば誰にも気付かれずに
-            //   finish する。失敗したら ChallengeActivity 側で可視化する。
-            //   nextLaunchInvisible のセットは下の lock 内で needsLaunch 確定時に行う (Codex 指摘 #2)。
-            // memo: 後続 lock 内で invisible 判定したいのでローカル変数で覚える。
-            requestInvisibleLaunch = true
+            SettingsRepository.DISPLAY_MODE_EXCLUDE_HEALTHCHECK -> {
+                if (purpose == "healthcheck") {
+                    android.util.Log.d(
+                        "ChromeBridge",
+                        "ChallengeManager: EXCLUDE_HEALTHCHECK + purpose=healthcheck → 画面起動を拒否"
+                    )
+                    notifySlackIfNeeded(context)
+                    return false
+                }
+                // それ以外は通常表示
+            }
+            // SettingsRepository.DISPLAY_MODE_ALL: 何もしない（従来通り全 challenge で画面起動）
         }
 
         // [2026-06-10] Codex 3 回目:

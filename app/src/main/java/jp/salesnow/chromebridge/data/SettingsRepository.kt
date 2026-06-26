@@ -124,13 +124,33 @@ class SettingsRepository(context: Context) {
         get() = prefs.getInt("circuit_trip_minutes", 60).coerceAtLeast(1)
         set(value) = prefs.edit { putInt("circuit_trip_minutes", value.coerceAtLeast(1)) }
 
-    // [2026-06-26] チャレンジ検知時に「自動タップ memory が登録されているドメインだけ」画面を
-    //   開くモード。OFF (デフォルト) なら従来通り全 challenge で画面起動。
-    //   ON のときは memory が無いドメインは画面起動を拒否し、Slack 通知のみ飛ばして fetch は
-    //   通常タイムアウトに任せる（手動操作を期待しない運用向け）。
-    var challengeAutoTapOnlyMode: Boolean
-        get() = prefs.getBoolean("challenge_auto_tap_only_mode", false)
-        set(value) = prefs.edit { putBoolean("challenge_auto_tap_only_mode", value) }
+    // [2026-06-26] チャレンジ画面の表示モード（3 択）
+    //   0 = MANUAL_ONLY: 手動タップが必要な時だけ表示（memory ありは invisible mode で
+    //       自動突破、memory なしは Slack 通知のみ）
+    //   1 = EXCLUDE_HEALTHCHECK: チャレンジ認証はすべて表示するが、ヘルスチェック (cron)
+    //       由来のリクエストは表示しない（Slack 通知のみ）
+    //   2 = ALL: すべて表示（デフォルト・従来挙動）
+    //
+    //   旧 `challenge_auto_tap_only_mode` (Boolean) からのマイグレーション:
+    //   - true  → 0 (MANUAL_ONLY)
+    //   - false → 2 (ALL)
+    var challengeDisplayMode: Int
+        get() {
+            if (prefs.contains("challenge_display_mode")) {
+                return prefs.getInt("challenge_display_mode", DISPLAY_MODE_ALL).coerceIn(0, 2)
+            }
+            // マイグレーション: 旧 Boolean フラグがあればそれを使う
+            return if (prefs.getBoolean("challenge_auto_tap_only_mode", false))
+                DISPLAY_MODE_MANUAL_ONLY
+            else DISPLAY_MODE_ALL
+        }
+        set(value) = prefs.edit { putInt("challenge_display_mode", value.coerceIn(0, 2)) }
+
+    companion object {
+        const val DISPLAY_MODE_MANUAL_ONLY = 0
+        const val DISPLAY_MODE_EXCLUDE_HEALTHCHECK = 1
+        const val DISPLAY_MODE_ALL = 2
+    }
 
     // [2026-06-26] Bridge が WebView で外部 URL を fetch する際のデフォルト User-Agent。
     //   空文字なら WebView 既定の Android UA を使用（従来挙動）。Google 等で `; wv` を含む

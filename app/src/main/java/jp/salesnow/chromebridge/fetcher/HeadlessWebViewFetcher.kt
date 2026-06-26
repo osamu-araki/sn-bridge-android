@@ -21,6 +21,9 @@ data class FetchRequest(
     val mode: String = "text",
     // [2026-06-20] リクエスト毎の User-Agent 上書き。null/空文字なら WebView デフォルト UA を使う。
     val userAgent: String? = null,
+    // [2026-06-26] リクエストの用途識別子。"healthcheck" 等。null/空 なら通常リクエスト。
+    //   チャレンジ画面の表示モード判定 (EXCLUDE_HEALTHCHECK) に利用。
+    val purpose: String? = null,
 )
 
 data class FetchResult(

@@ -173,6 +173,9 @@ class BridgeHttpServer(
         val requestedTimeout: Int
         // [2026-06-20] user_agent: リクエスト毎の WebView User-Agent 上書き（null/空文字なら WebView デフォルト）
         val userAgent: String?
+        // [2026-06-26] purpose: リクエストの用途識別子（"healthcheck" 等）。
+        //   チャレンジ画面の表示モード判定（EXCLUDE_HEALTHCHECK）に利用。
+        val purpose: String?
         try {
             url = json.get("url")?.asString
             mode = json.get("mode")?.asString
@@ -182,6 +185,7 @@ class BridgeHttpServer(
             // [2026-06-20] `"user_agent": null` を仕様どおり「指定なし」として扱う（JsonNull.asString が
             //   例外を投げて 400 になる Codex 指摘への対応）。
             userAgent = json.get("user_agent")?.takeUnless { it.isJsonNull }?.asString
+            purpose = json.get("purpose")?.takeUnless { it.isJsonNull }?.asString
         } catch (e: Exception) {
             return errorResponse(
                 Status.BAD_REQUEST, "bad_request",
@@ -293,6 +297,7 @@ class BridgeHttpServer(
                 timeout = effectiveTimeout,
                 mode = fetchMode,
                 userAgent = userAgent?.takeIf { it.isNotBlank() },
+                purpose = purpose?.takeIf { it.isNotBlank() },
             )
             val fetchResult = pool.fetch(request)
             val elapsed = System.currentTimeMillis() - startMs

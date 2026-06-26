@@ -14,6 +14,9 @@ import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.semantics.Role
 import jp.salesnow.chromebridge.data.SettingsRepository
 import jp.salesnow.chromebridge.fetcher.GoogleSearchCircuitBreaker
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -445,8 +448,8 @@ fun SettingsTab(
             val entries = remember(refreshTrigger) {
                 runCatching { repo.listTapMemoryEntries() }.getOrDefault(emptyList())
             }
-            // [2026-06-26] 自動タップ専用モードのトグル
-            var autoTapOnlyMode by remember { mutableStateOf(repo.challengeAutoTapOnlyMode) }
+            // [2026-06-26] チャレンジ画面の表示モード（3 択）
+            var displayMode by remember { mutableIntStateOf(repo.challengeDisplayMode) }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -460,25 +463,50 @@ fun SettingsTab(
                         color = NavyDark
                     )
                     Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("自動タップ memory がある時だけ画面を開く", fontSize = 13.sp, color = NavyDark)
-                            Text(
-                                "OFF: 全 challenge で画面を開く / ON: memory 無しは Slack 通知のみ",
-                                fontSize = 11.sp,
-                                color = GrayLight,
+                    Text("チャレンジ画面の表示", fontSize = 13.sp, color = NavyDark, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    val options = listOf(
+                        Triple(
+                            SettingsRepository.DISPLAY_MODE_MANUAL_ONLY,
+                            "手動タップが必要な時だけ表示",
+                            "memory ありは画面を出さずに自動突破。memory なしは Slack 通知のみ",
+                        ),
+                        Triple(
+                            SettingsRepository.DISPLAY_MODE_EXCLUDE_HEALTHCHECK,
+                            "すべて表示（ヘルスチェック除外）",
+                            "通常の challenge は画面表示。ポータル cron 由来は Slack 通知のみ",
+                        ),
+                        Triple(
+                            SettingsRepository.DISPLAY_MODE_ALL,
+                            "すべて表示",
+                            "全 challenge で画面を開く（従来挙動）",
+                        ),
+                    )
+                    for ((mode, title, desc) in options) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(
+                                    selected = (mode == displayMode),
+                                    onClick = {
+                                        displayMode = mode
+                                        repo.challengeDisplayMode = mode
+                                    },
+                                    role = Role.RadioButton,
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = (mode == displayMode),
+                                onClick = null,
                             )
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, fontSize = 13.sp, color = NavyDark)
+                                Text(desc, fontSize = 11.sp, color = GrayLight)
+                            }
                         }
-                        Switch(
-                            checked = autoTapOnlyMode,
-                            onCheckedChange = {
-                                autoTapOnlyMode = it
-                                repo.challengeAutoTapOnlyMode = it
-                            },
-                        )
+                        Spacer(Modifier.height(4.dp))
                     }
                     Spacer(Modifier.height(12.dp))
                     if (entries.isEmpty()) {

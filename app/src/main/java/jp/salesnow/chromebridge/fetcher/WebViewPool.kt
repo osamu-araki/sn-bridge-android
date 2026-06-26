@@ -340,7 +340,7 @@ class WebViewPool(
                                         }
                                     }
                                 }
-                                val shown = ChallengeManager.show(context, wv)
+                                val shown = ChallengeManager.show(context, wv, request.purpose)
                                 if (!shown) {
                                     // [2026-06-26] 自動タップ専用モード + memory なしで画面起動を
                                     //   拒否されたケース。手動操作が来ない前提なので challenge 経路を
