@@ -36,6 +36,8 @@ class BridgeHttpServer(
     // [2026-06-10] OTA: Portal の notify から POST /update-check で呼ばれる
     //   戻り値は「実際に起動したか」（false = 既に実行中で skip）
     private val onUpdateCheck: (() -> Boolean)? = null,
+    // [2026-06-27] 詳細ログ ON 時に fetch 結果のダンプ先頭 100 文字を出力する判定用 provider
+    private val isVerboseLog: () -> Boolean = { false },
     private val onLog: (String) -> Unit = {}
 ) : NanoHTTPD(port) {
 
@@ -304,6 +306,14 @@ class BridgeHttpServer(
 
             if (fetchResult.ok) {
                 onLog("成功 [$fetchMode]: $url — ${fetchResult.text.length}文字 (${elapsed}ms, http=${fetchResult.httpStatus})")
+                // [2026-06-27] 詳細ログ ON 時はダンプの先頭 100 文字を出力（改行/タブを ↵/⇥ で表示）
+                if (isVerboseLog()) {
+                    val sample = fetchResult.text.take(100)
+                        .replace("\n", "↵")
+                        .replace("\r", "")
+                        .replace("\t", "⇥")
+                    onLog("  ダンプ(先頭100文字): $sample")
+                }
                 val resp = mutableMapOf<String, Any?>(
                     "ok" to true,
                     "mode" to fetchResult.mode,
@@ -346,6 +356,14 @@ class BridgeHttpServer(
                 resultError = errCode
                 val (status, retryable, category) = classifyError(errCode)
                 onLog("エラー: $url — $errCode (${elapsed}ms, status=${status.requestStatus}, http=${fetchResult.httpStatus})")
+                // [2026-06-27] 詳細ログ ON 時はダンプの先頭 100 文字を出力（取得できていれば）
+                if (isVerboseLog() && fetchResult.text.isNotEmpty()) {
+                    val sample = fetchResult.text.take(100)
+                        .replace("\n", "↵")
+                        .replace("\r", "")
+                        .replace("\t", "⇥")
+                    onLog("  ダンプ(先頭100文字): $sample")
+                }
 
                 val errorResp = mutableMapOf<String, Any?>(
                     "ok" to false,

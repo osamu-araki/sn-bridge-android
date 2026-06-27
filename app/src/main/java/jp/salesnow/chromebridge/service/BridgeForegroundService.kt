@@ -159,7 +159,9 @@ class BridgeForegroundService : Service() {
             statsCollector = statsCollector,
             statsRepository = statsRepository,
             // [2026-06-10] OTA: HTTP /update-check 経由のトリガを Service の runUpdateCheck に橋渡し
-            onUpdateCheck = { runUpdateCheck("http") }
+            onUpdateCheck = { runUpdateCheck("http") },
+            // [2026-06-27] 詳細ログ ON 時に fetch 結果のダンプ先頭 100 文字を出力させる
+            isVerboseLog = { SettingsRepository(this@BridgeForegroundService).verboseLog },
         ) { msg ->
             addHttpLog(msg)
         }
