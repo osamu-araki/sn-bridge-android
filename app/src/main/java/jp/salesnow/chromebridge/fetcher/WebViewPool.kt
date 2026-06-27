@@ -273,13 +273,6 @@ class WebViewPool(
         //   起動して WebView を可視化する（運用上「Bridge が今何を取りに行ってるか」を見せる）。
         //   抽出完了 / タイムアウト時の dismiss 判定で challengeShown と OR する。
         val alwaysShown = AtomicBoolean(false)
-        // [2026-06-27] Google origin 403 を本文ベースで検知したら true。
-        //   challenge 経路にも入っている可能性があるので、最終 return 直前に 499 へ倒す。
-        val googleOrigin403Detected = AtomicBoolean(false)
-        // [2026-06-27] Google /search の SPA 初期 HTML 段階で isGoogleSearchBlocked 単独判定された
-        //   ケース (本文 800 文字以下) は SPA レンダリング待ちのため 1.5s 後に再 detect する。
-        //   一度しか scheduled しないようフラグを保持。
-        val googleSerpRedetectScheduled = AtomicBoolean(false)
         // [2026-06-27] WebViewClient.onReceivedHttpError で捕捉した HTTP status code。
         //   メインフレームのみ反映。デフォルト 200 (= エラーが起きなかった想定)。
         val lastHttpStatus = java.util.concurrent.atomic.AtomicInteger(200)
@@ -299,18 +292,15 @@ class WebViewPool(
                 //   evaluateJavascript の callback には JSON.stringify(...) の戻り値が
                 //   さらに文字列リテラルとして来るため、二段 parse する。
                 //   parse 失敗時は challenge 判定を skip して通常抽出に進む。
-                // [2026-06-27] bodySample (先頭 500 文字) を追加。challenge 判定経路でも
-                //   Google origin 403 を本文ベースで検知して即 499 に倒すため。
                 private val detectJs = "JSON.stringify({" +
                     "title: document.title||''," +
                     "url: location.href||''," +
                     "recaptcha: !!document.querySelector(" +
                         "'iframe[src*=\"recaptcha\"],iframe[src*=\"google.com/recaptcha\"]')," +
-                    "bodyLen: (document.body && document.body.innerText || '').trim().length," +
-                    "bodySample: (document.body && document.body.innerText || '').substring(0, 500)" +
+                    "bodyLen: (document.body && document.body.innerText || '').trim().length" +
                     "})"
 
-                // [2026-06-27] detect 処理を関数化。SPA 初期 HTML 段階の誤検知を防ぐため再 detect を可能に。
+                // [2026-06-27] detect 処理を関数化（onPageFinished から呼び出すだけ）
                 val runDetect: () -> Unit = run@{
                     if (extracted || settled.get()) return@run
                     wv.evaluateJavascript(detectJs) { jsonRaw ->
@@ -319,7 +309,6 @@ class WebViewPool(
                         var pageUrl = ""
                         var hasRecaptcha = false
                         var bodyLen = -1
-                        var bodySample = ""
                         var parsedOk = false
                         try {
                             val unwrapped = com.google.gson.JsonParser.parseString(jsonRaw).asString
@@ -328,56 +317,18 @@ class WebViewPool(
                             pageUrl = obj.get("url")?.asString ?: ""
                             hasRecaptcha = obj.get("recaptcha")?.asBoolean ?: false
                             bodyLen = obj.get("bodyLen")?.asInt ?: -1
-                            bodySample = obj.get("bodySample")?.asString ?: ""
                             parsedOk = true
                         } catch (_: Exception) {
                             // parse 失敗時は challenge 判定を skip（通常抽出にフォールスルー）
                         }
 
-                        // [2026-06-27] Google origin 403 を本文ベースで先に判定。challenge にも
-                        //   通常抽出にも入る前に CircuitBreaker.recordFailure して latch.countDown する。
-                        //   doFetch 末尾で googleOrigin403Detected を見て 499 を返す。
-                        if (parsedOk) {
-                            val reqHost = try { java.net.URI(pageUrl).host?.lowercase() } catch (_: Exception) { null }
-                            if (ChallengeManager.isGoogleOrigin403(reqHost, bodySample)) {
-                                googleOrigin403Detected.set(true)
-                                extracted = true
-                                reqHost?.let {
-                                    GoogleSearchCircuitBreaker.recordFailure(context, it)
-                                    val remaining = GoogleSearchCircuitBreaker.remainingTripMs(it)
-                                    if (remaining > 0) {
-                                        onLog("circuit tripped (origin 403, detect path): host=$it trip=${remaining / 1000}s")
-                                    } else {
-                                        onLog("origin 403 detected (detect path): host=$it → 499 即返却 (worker=$workerId)")
-                                    }
-                                }
-                                latch.countDown()
-                                return@evaluateJavascript
-                            }
-                        }
-
                         if (parsedOk && ChallengeManager.isChallenge(title, pageUrl, hasRecaptcha, bodyLen)) {
-                            // [2026-06-27] Google /search で isGoogleSearchBlocked 単独で判定された場合は
-                            //   SPA 初期 HTML 段階の誤検知の可能性が高い (loading→SERP に化ける)。
-                            //   1.5 秒待って再 detect。reCAPTCHA / sorry / title マッチ判定があれば本物 challenge なので
-                            //   この遅延は走らない。
-                            val lowerUrl = pageUrl.lowercase()
-                            val isGoogleBlocked = ChallengeManager.isGoogleSearchBlocked(pageUrl, bodyLen)
-                            val isOnlyGoogleSearchBlocked = isGoogleBlocked &&
-                                !ChallengeManager.isChallengeTitle(title) &&
-                                !lowerUrl.contains("google.com/sorry") &&
-                                !lowerUrl.contains("google.co.jp/sorry") &&
-                                !hasRecaptcha  // [Codex 指摘] reCAPTCHA iframe があれば常に本物 challenge と扱う
-                            if (isOnlyGoogleSearchBlocked && !googleSerpRedetectScheduled.getAndSet(true)) {
-                                // [2026-06-27] 1.5s → 3s に延長 (実機ログから 1.5s では SPA レンダリング未完のケース多発)
-                                onLog("Google /search 初期 HTML 段階の可能性 → 3s 待機して再判定 (bodyLen=$bodyLen, worker=$workerId)")
-                                mainHandler.postDelayed({ runDetect() }, 3000L)
-                                return@evaluateJavascript
-                            }
                             // チャレンジページ検知 → ユーザーに画面を表示
                             challengeDetected.set(true)
                             if (!challengeShown.getAndSet(true)) {
                                 challengeStartMs = System.currentTimeMillis()
+                                val lowerUrl = pageUrl.lowercase()
+                                val isGoogleBlocked = ChallengeManager.isGoogleSearchBlocked(pageUrl, bodyLen)
                                 val kind = when {
                                     lowerUrl.contains("google.com/sorry") ||
                                         lowerUrl.contains("google.co.jp/sorry") -> "Google sorry"
@@ -455,9 +406,11 @@ class WebViewPool(
                     latch.countDown()
                 }
 
-                // [2026-06-27] HTTP layer で status code を直接捕捉 (文字数判定より確実)
+                // [2026-06-27] HTTP layer で status code を捕捉 (FetchResult.httpStatus / http.log /
+                //   JSON http_status に反映する記録専用)。
                 //   メインフレームのみ反映。サブリソース (iframe/img/css) のエラーは無視。
-                //   Google host の 403 は CircuitBreaker.recordFailure + 即 499 経路に倒す。
+                //   1.2.32 相当の挙動に戻すため、CircuitBreaker.recordFailure / 即 499 経路には倒さない。
+                //   Google 403 でも従来通り URL ベース isGoogleSearchBlocked + ChallengeActivity 経路に任せる。
                 override fun onReceivedHttpError(
                     view: WebView?,
                     request: android.webkit.WebResourceRequest?,
@@ -475,22 +428,11 @@ class WebViewPool(
                         reqHost == "google.co.jp" || reqHost.endsWith(".google.co.jp")
                     )
                     onLog("HTTP error: status=$statusCode host=$reqHost url=${request.url} (worker=$workerId)")
-                    if (statusCode == 403 && isGoogle && !extracted && !settled.get()) {
-                        googleOrigin403Detected.set(true)
-                        extracted = true
-                        reqHost?.let {
-                            GoogleSearchCircuitBreaker.recordFailure(context, it)
-                            val remaining = GoogleSearchCircuitBreaker.remainingTripMs(it)
-                            if (remaining > 0) {
-                                onLog("circuit tripped (HTTP 403 path): host=$it trip=${remaining / 1000}s")
-                            } else {
-                                onLog("HTTP 403 detected: host=$it → 499 即返却 + CircuitBreaker.recordFailure (worker=$workerId)")
-                            }
-                        }
-                        if (challengeShown.get() || alwaysShown.get()) {
-                            mainHandler.post { ChallengeManager.dismiss(wv) }
-                        }
-                        latch.countDown()
+                    // [2026-06-27] 1.2.32 相当の挙動に戻すため、ここでは status 記録とログ出力だけにする。
+                    //   Google 403 でも CircuitBreaker.recordFailure / 即 499 経路には倒さない。
+                    //   challenge 検知 (URL ベース) の従来通り isGoogleSearchBlocked + ChallengeActivity 経路に任せる。
+                    if (statusCode == 403 && isGoogle) {
+                        onLog("HTTP 403 noted (no auto-circuit): host=$reqHost url=${request.url} (worker=$workerId)")
                     }
                 }
 
@@ -587,49 +529,7 @@ class WebViewPool(
             return FetchResult(ok = false, error = "fetch_failed", message = pageError, httpStatus = lastHttpStatus.get())
         }
 
-        // [2026-06-27] detect フェーズで Google origin 403 を本文ベース検知した場合は即 499 返却。
-        if (googleOrigin403Detected.get()) {
-            // [Codex 指摘] displayMode==ALL の場合は detect 前に ChallengeManager.show(alwaysShow=true)
-            //   が走って WebView が Activity に attach 済みなので、明示的に dismiss する
-            if (challengeShown.get() || alwaysShown.get()) {
-                mainHandler.post { ChallengeManager.dismiss(wv) }
-            }
-            return FetchResult(
-                ok = false,
-                error = "circuit_open",
-                message = "Google origin 403 を検知しました。bridge 単位で Google を停止中です。",
-                httpStatus = if (lastHttpStatus.get() != 200) lastHttpStatus.get() else 403,
-            )
-        }
-
         val parsed = parseJsResult(jsResult, request)
-
-        // [2026-06-27] 通常抽出後の最終フォールバック (detect フェーズで bodySample 500 文字に
-        //   含まれなかった本文後半マッチを救済)。
-        if (parsed.ok) {
-            val reqHost = try { java.net.URI(request.url).host?.lowercase() } catch (_: Exception) { null }
-            if (ChallengeManager.isGoogleOrigin403(reqHost, parsed.text)) {
-                reqHost?.let {
-                    GoogleSearchCircuitBreaker.recordFailure(context, it)
-                    val remaining = GoogleSearchCircuitBreaker.remainingTripMs(it)
-                    if (remaining > 0) {
-                        onLog("circuit tripped (origin 403, extract path): host=$it trip=${remaining / 1000}s")
-                    } else {
-                        onLog("origin 403 detected (extract path): host=$it → 499 即返却 (worker=$workerId)")
-                    }
-                }
-                if (challengeShown.get() || alwaysShown.get()) {
-                    mainHandler.post { ChallengeManager.dismiss(wv) }
-                }
-                return FetchResult(
-                    ok = false,
-                    error = "circuit_open",
-                    message = "Google origin 403 を検知しました。bridge 単位で Google を停止中です。",
-                    httpStatus = if (lastHttpStatus.get() != 200) lastHttpStatus.get() else 403,
-                )
-            }
-        }
-
         return parsed.copy(httpStatus = lastHttpStatus.get())
     }
 
