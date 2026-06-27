@@ -184,6 +184,35 @@ object ChallengeManager {
         return false
     }
 
+    /**
+     * [2026-06-27] Google origin 403 ページの本文ベース検知。
+     *
+     * Google が返す「Your client does not have permission to get URL ...」「403. That's an error.」を
+     * 含むエラーページかを本文文字列で判定する。URL ベース判定 (isGoogleSearchBlocked) では:
+     *   - 本文 800 文字超
+     *   - /search 配下のサブパス (/search/about 等)
+     *   - host バリエーション (search.google.com 等)
+     * 等の判定漏れがあり、403 本文がそのまま ok:true で返ってしまっていた。本文マーカー判定により
+     * Google host であれば確実に 403 を検知できる。
+     *
+     * 呼び出し側 (WebViewPool.doFetch): true なら CircuitBreaker.recordFailure + 499 で即拒否。
+     */
+    private val google403BodyMarkers = listOf(
+        "Your client does not have permission to get URL",
+        "403. That's an error.",
+    )
+
+    fun isGoogleOrigin403(host: String?, text: String): Boolean {
+        if (host == null) return false
+        val lower = host.lowercase()
+        // [Codex 指摘] `evilgoogle.com` のような偽装 host を排除するため境界付きで判定
+        val isGoogle =
+            lower == "google.com" || lower.endsWith(".google.com") ||
+            lower == "google.co.jp" || lower.endsWith(".google.co.jp")
+        if (!isGoogle) return false
+        return google403BodyMarkers.any { text.contains(it) }
+    }
+
     /** WebViewPool が CircuitBreaker 連携で利用するため public 化。 */
     fun isGoogleSearchBlocked(url: String, visibleBodyLen: Int): Boolean {
         if (visibleBodyLen !in 0..GOOGLE_SEARCH_MIN_BODY_LEN) return false
