@@ -193,7 +193,9 @@ class WebViewPool(
             onLog("circuit open: host=$urlHost remaining=${remainingSec}s → 499")
             return FetchResult(
                 ok = false, error = "circuit_open",
-                message = "Google 検索のサーキットブレーカーが開いています。残り ${remainingSec} 秒"
+                message = "Google 検索のサーキットブレーカーが開いています。残り ${remainingSec} 秒",
+                // [Codex 指摘 #2] origin 到達せず即拒否だが、trip の原因は origin 403 なので意味的に 403 を返す
+                httpStatus = 403,
             )
         }
 
@@ -278,6 +280,9 @@ class WebViewPool(
         //   ケース (本文 800 文字以下) は SPA レンダリング待ちのため 1.5s 後に再 detect する。
         //   一度しか scheduled しないようフラグを保持。
         val googleSerpRedetectScheduled = AtomicBoolean(false)
+        // [2026-06-27] WebViewClient.onReceivedHttpError で捕捉した HTTP status code。
+        //   メインフレームのみ反映。デフォルト 200 (= エラーが起きなかった想定)。
+        val lastHttpStatus = java.util.concurrent.atomic.AtomicInteger(200)
         // [2026-05-18] fetch 確定後に遅延コールバックが古い WebView を触らないためのフラグ
         val settled = AtomicBoolean(false)
         // [2026-04-12] チャレンジ計測用
@@ -450,6 +455,45 @@ class WebViewPool(
                     latch.countDown()
                 }
 
+                // [2026-06-27] HTTP layer で status code を直接捕捉 (文字数判定より確実)
+                //   メインフレームのみ反映。サブリソース (iframe/img/css) のエラーは無視。
+                //   Google host の 403 は CircuitBreaker.recordFailure + 即 499 経路に倒す。
+                override fun onReceivedHttpError(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest?,
+                    errorResponse: android.webkit.WebResourceResponse?
+                ) {
+                    // [Codex 指摘 #1] settled 後の遅延 callback で次 fetch の lastHttpStatus を汚染しないよう先に return
+                    if (settled.get()) return
+                    if (request == null || errorResponse == null) return
+                    if (!request.isForMainFrame) return
+                    val statusCode = errorResponse.statusCode
+                    lastHttpStatus.set(statusCode)
+                    val reqHost = try { request.url.host?.lowercase() } catch (_: Exception) { null }
+                    val isGoogle = reqHost != null && (
+                        reqHost == "google.com" || reqHost.endsWith(".google.com") ||
+                        reqHost == "google.co.jp" || reqHost.endsWith(".google.co.jp")
+                    )
+                    onLog("HTTP error: status=$statusCode host=$reqHost url=${request.url} (worker=$workerId)")
+                    if (statusCode == 403 && isGoogle && !extracted && !settled.get()) {
+                        googleOrigin403Detected.set(true)
+                        extracted = true
+                        reqHost?.let {
+                            GoogleSearchCircuitBreaker.recordFailure(context, it)
+                            val remaining = GoogleSearchCircuitBreaker.remainingTripMs(it)
+                            if (remaining > 0) {
+                                onLog("circuit tripped (HTTP 403 path): host=$it trip=${remaining / 1000}s")
+                            } else {
+                                onLog("HTTP 403 detected: host=$it → 499 即返却 + CircuitBreaker.recordFailure (worker=$workerId)")
+                            }
+                        }
+                        if (challengeShown.get() || alwaysShown.get()) {
+                            mainHandler.post { ChallengeManager.dismiss(wv) }
+                        }
+                        latch.countDown()
+                    }
+                }
+
                 // [2026-03-13] SSL エラー時にページ読み込みを続行
                 override fun onReceivedSslError(
                     view: WebView?,
@@ -517,7 +561,8 @@ class WebViewPool(
         if (deadInstances.contains(wv)) {
             return FetchResult(
                 ok = false, error = "renderer_gone",
-                message = pageError ?: "WebView レンダラが異常終了しました (worker=$workerId)"
+                message = pageError ?: "WebView レンダラが異常終了しました (worker=$workerId)",
+                httpStatus = lastHttpStatus.get(),
             )
         }
 
@@ -535,11 +580,11 @@ class WebViewPool(
             } else {
                 "${request.timeout}秒でタイムアウトしました (worker=$workerId)"
             }
-            return FetchResult(ok = false, error = "timeout", message = msg)
+            return FetchResult(ok = false, error = "timeout", message = msg, httpStatus = lastHttpStatus.get())
         }
 
         if (pageError != null) {
-            return FetchResult(ok = false, error = "fetch_failed", message = pageError)
+            return FetchResult(ok = false, error = "fetch_failed", message = pageError, httpStatus = lastHttpStatus.get())
         }
 
         // [2026-06-27] detect フェーズで Google origin 403 を本文ベース検知した場合は即 499 返却。
@@ -553,6 +598,7 @@ class WebViewPool(
                 ok = false,
                 error = "circuit_open",
                 message = "Google origin 403 を検知しました。bridge 単位で Google を停止中です。",
+                httpStatus = if (lastHttpStatus.get() != 200) lastHttpStatus.get() else 403,
             )
         }
 
@@ -579,11 +625,12 @@ class WebViewPool(
                     ok = false,
                     error = "circuit_open",
                     message = "Google origin 403 を検知しました。bridge 単位で Google を停止中です。",
+                    httpStatus = if (lastHttpStatus.get() != 200) lastHttpStatus.get() else 403,
                 )
             }
         }
 
-        return parsed
+        return parsed.copy(httpStatus = lastHttpStatus.get())
     }
 
     private fun parseJsResult(raw: String?, request: FetchRequest): FetchResult {

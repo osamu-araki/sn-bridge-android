@@ -34,7 +34,10 @@ data class FetchResult(
     val mode: String = "text",
     val dom: String? = null,
     val error: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    // [2026-06-27] WebView の onReceivedHttpError で捕捉した HTTP status code。
+    //   既定 200 (= エラーが起きなかった想定)。403 / 404 / 5xx 等を捕捉した場合に上書き。
+    val httpStatus: Int = 200,
 )
 
 /**

@@ -303,7 +303,7 @@ class BridgeHttpServer(
             val elapsed = System.currentTimeMillis() - startMs
 
             if (fetchResult.ok) {
-                onLog("成功 [$fetchMode]: $url — ${fetchResult.text.length}文字 (${elapsed}ms)")
+                onLog("成功 [$fetchMode]: $url — ${fetchResult.text.length}文字 (${elapsed}ms, http=${fetchResult.httpStatus})")
                 val resp = mutableMapOf<String, Any?>(
                     "ok" to true,
                     "mode" to fetchResult.mode,
@@ -312,7 +312,9 @@ class BridgeHttpServer(
                     "title" to fetchResult.title,
                     "text" to fetchResult.text,
                     "length" to fetchResult.text.length,
-                    "elapsed_ms" to elapsed
+                    "elapsed_ms" to elapsed,
+                    // [2026-06-27] origin HTTP status code (デフォルト 200)
+                    "http_status" to fetchResult.httpStatus,
                 )
                 if (fetchMode == "dom" && fetchResult.dom != null) {
                     resp["dom"] = JsonParser.parseString(fetchResult.dom)
@@ -343,14 +345,16 @@ class BridgeHttpServer(
                 val errCode = fetchResult.error ?: "unknown"
                 resultError = errCode
                 val (status, retryable, category) = classifyError(errCode)
-                onLog("エラー: $url — $errCode (${elapsed}ms, status=${status.requestStatus})")
+                onLog("エラー: $url — $errCode (${elapsed}ms, status=${status.requestStatus}, http=${fetchResult.httpStatus})")
 
                 val errorResp = mutableMapOf<String, Any?>(
                     "ok" to false,
                     "error" to errCode,
                     "message" to (fetchResult.message ?: ""),
                     "retryable" to retryable,
-                    "category" to category
+                    "category" to category,
+                    // [2026-06-27] WebView の onReceivedHttpError で捕捉した origin HTTP status code
+                    "http_status" to fetchResult.httpStatus,
                 )
                 // [2026-06-26] circuit_open は remaining_seconds をクライアントが利用するため添付
                 if (errCode == "circuit_open") {
