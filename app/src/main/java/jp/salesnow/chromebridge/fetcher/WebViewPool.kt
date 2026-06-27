@@ -334,7 +334,9 @@ class WebViewPool(
                                 onLog("チャレンジ検知 [$kind]: domain=$challengeDomain title=\"$title\" url=\"$pageUrl\" (worker=$workerId)")
                                 // [2026-06-26] Google 検索の極小レスポンス (403 等) はサーキットブレーカーに記録。
                                 //   N 回 / 5 分で trip し、以降の fetch は 499 で即拒否される。
-                                if (isGoogleBlocked) {
+                                // [2026-06-27] reCAPTCHA が出ているケースは「手動で突破可能 = 一過性」なので
+                                //   circuit には記録しない。純粋な 403 ページ（reCAPTCHA なし）だけ記録対象。
+                                if (isGoogleBlocked && !hasRecaptcha) {
                                     val gHost = try { java.net.URI(pageUrl).host?.lowercase() } catch (_: Exception) { null }
                                     if (gHost != null) {
                                         GoogleSearchCircuitBreaker.recordFailure(context, gHost)
