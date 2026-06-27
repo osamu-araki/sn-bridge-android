@@ -103,10 +103,148 @@ fun SettingsTab(
     var autoUpdateInput by remember(autoUpdateCheck) { mutableStateOf(autoUpdateCheck) }
     var checkTokenVisible by remember { mutableStateOf(false) }
 
+    // [2026-06-27] 共通 State (リクエストカスタマイズ / サーキットブレーカー / 自動タップ記憶 / サーキット snapshot)
+    val sharedCtx = LocalContext.current
+    val sharedRepo = remember { SettingsRepository(sharedCtx) }
+    var uaInput by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
+    var intervalInput by remember { mutableStateOf(sharedRepo.minRequestIntervalMs.toString()) }
+    var thresholdInput by remember { mutableStateOf(sharedRepo.circuitFailureThreshold.toString()) }
+    var windowInput by remember { mutableStateOf(sharedRepo.circuitWindowMinutes.toString()) }
+    var tripInput by remember { mutableStateOf(sharedRepo.circuitTripMinutes.toString()) }
+    var snapshotRefresh by remember { mutableIntStateOf(0) }
+
+    // [2026-06-27] 各入力の「画面表示時の baseline」を var で持ち、保存後に更新する
+    //   (Codex 指摘: val 固定だと保存しても dirty が残る)
+    var uaBaseline by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
+    var intervalBaseline by remember { mutableStateOf(sharedRepo.minRequestIntervalMs) }
+    var thresholdBaseline by remember { mutableIntStateOf(sharedRepo.circuitFailureThreshold) }
+    var windowBaseline by remember { mutableIntStateOf(sharedRepo.circuitWindowMinutes) }
+    var tripBaseline by remember { mutableIntStateOf(sharedRepo.circuitTripMinutes) }
+
+    // [2026-06-27] props 由来も保存後すぐ dirty 解消できるよう SettingsTab 内で baseline 化
+    //   (MainActivity の callback が即時に再 compose を引き起こさないケース対応)
+    var portBaseline by remember(settings.port) { mutableIntStateOf(settings.port) }
+    var apiKeyBaseline by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
+    var concurrencyBaseline by remember(settings.concurrency) { mutableIntStateOf(settings.concurrency) }
+    var maxTimeoutBaseline by remember(settings.maxTimeout) { mutableIntStateOf(settings.maxTimeout) }
+    var maxWaitBaseline by remember(settings.maxWait) { mutableIntStateOf(settings.maxWait) }
+    var tunnelTokenBaseline by remember(savedTunnelToken) { mutableStateOf(savedTunnelToken) }
+    var tunnelDomainBaseline by remember(savedTunnelDomain) { mutableStateOf(savedTunnelDomain) }
+    var manifestUrlBaseline by remember(portalManifestUrl) { mutableStateOf(portalManifestUrl) }
+    var checkTokenBaseline by remember(portalCheckToken) { mutableStateOf(portalCheckToken) }
+    var autoUpdateBaseline by remember(autoUpdateCheck) { mutableStateOf(autoUpdateCheck) }
+
+    // [2026-06-27] dirty 検知 (画面表示時の baseline と現在値を比較)
+    //   数値系は実効値変換後で比較し "00" vs "0" 等の false positive を避ける (Codex 指摘 #3)
+    val portChanged = (portInput.toIntOrNull() ?: portBaseline) != portBaseline
+    val apiKeyChanged = apiKeyInput != apiKeyBaseline
+    val concurrencyChanged = Math.round(concurrencyInput) != concurrencyBaseline
+    val maxTimeoutChanged = (maxTimeoutInput.toIntOrNull() ?: maxTimeoutBaseline).coerceIn(10, 120) != maxTimeoutBaseline
+    val maxWaitChanged = (maxWaitInput.toIntOrNull() ?: maxWaitBaseline).coerceIn(1, 30) != maxWaitBaseline
+    val tunnelTokenChanged = tunnelTokenInput != tunnelTokenBaseline
+    val tunnelDomainChanged = tunnelDomainInput != tunnelDomainBaseline
+    val manifestUrlChanged = manifestUrlInput.trim() != manifestUrlBaseline.trim()
+    val checkTokenChanged = checkTokenInput.trim() != checkTokenBaseline.trim()
+    val autoUpdateChanged = autoUpdateInput != autoUpdateBaseline
+    val uaChanged = uaInput.trim() != uaBaseline.trim()
+    val intervalChanged = (intervalInput.toLongOrNull() ?: intervalBaseline).coerceAtLeast(0L) != intervalBaseline
+    val thresholdChanged = (thresholdInput.toIntOrNull() ?: thresholdBaseline).coerceAtLeast(1) != thresholdBaseline
+    val windowChanged = (windowInput.toIntOrNull() ?: windowBaseline).coerceAtLeast(1) != windowBaseline
+    val tripChanged = (tripInput.toIntOrNull() ?: tripBaseline).coerceAtLeast(1) != tripBaseline
+
+    val hasAnyDirty = portChanged || apiKeyChanged || concurrencyChanged ||
+        maxTimeoutChanged || maxWaitChanged ||
+        tunnelTokenChanged || tunnelDomainChanged ||
+        manifestUrlChanged || checkTokenChanged || autoUpdateChanged ||
+        uaChanged || intervalChanged ||
+        thresholdChanged || windowChanged || tripChanged
+
+    val dirtyCount = listOf(
+        portChanged, apiKeyChanged, concurrencyChanged, maxTimeoutChanged, maxWaitChanged,
+        tunnelTokenChanged, tunnelDomainChanged,
+        manifestUrlChanged, checkTokenChanged, autoUpdateChanged,
+        uaChanged, intervalChanged,
+        thresholdChanged, windowChanged, tripChanged
+    ).count { it }
+
+    // 再起動が必要な変更 (Port / API Key / 並列数 / Tunnel Token / Tunnel Domain)
+    val needsRestart = serverRunning && (
+        portChanged || apiKeyChanged || concurrencyChanged ||
+        tunnelTokenChanged || tunnelDomainChanged
+    )
+
+    val doSave: () -> Unit = saveAll@{
+        if (portChanged || apiKeyChanged || concurrencyChanged || maxTimeoutChanged || maxWaitChanged) {
+            val newSettings = SettingsState(
+                port = portInput.toIntOrNull() ?: portBaseline,
+                apiKey = apiKeyInput,
+                concurrency = Math.round(concurrencyInput),
+                maxTimeout = (maxTimeoutInput.toIntOrNull() ?: maxTimeoutBaseline).coerceIn(10, 120),
+                maxWait = (maxWaitInput.toIntOrNull() ?: maxWaitBaseline).coerceIn(1, 30),
+            )
+            onSave(newSettings)
+            // baseline + input を正規化後の値に揃える
+            portInput = newSettings.port.toString()
+            portBaseline = newSettings.port
+            apiKeyBaseline = newSettings.apiKey
+            concurrencyInput = newSettings.concurrency.toFloat()
+            concurrencyBaseline = newSettings.concurrency
+            maxTimeoutInput = newSettings.maxTimeout.toString()
+            maxTimeoutBaseline = newSettings.maxTimeout
+            maxWaitInput = newSettings.maxWait.toString()
+            maxWaitBaseline = newSettings.maxWait
+        }
+        if (tunnelTokenChanged || tunnelDomainChanged) {
+            onSaveTunnelSettings(tunnelTokenInput, tunnelDomainInput)
+            tunnelTokenBaseline = tunnelTokenInput
+            tunnelDomainBaseline = tunnelDomainInput
+        }
+        if (manifestUrlChanged || checkTokenChanged || autoUpdateChanged) {
+            val trimmedUrl = manifestUrlInput.trim()
+            val trimmedToken = checkTokenInput.trim()
+            onSavePortalUpdateSettings(trimmedUrl, trimmedToken, autoUpdateInput)
+            manifestUrlInput = trimmedUrl
+            checkTokenInput = trimmedToken
+            manifestUrlBaseline = trimmedUrl
+            checkTokenBaseline = trimmedToken
+            autoUpdateBaseline = autoUpdateInput
+        }
+        if (uaChanged || intervalChanged) {
+            sharedRepo.defaultUserAgentOverride = uaInput.trim()
+            sharedRepo.minRequestIntervalMs = intervalInput.toLongOrNull() ?: 0L
+            uaInput = sharedRepo.defaultUserAgentOverride
+            intervalInput = sharedRepo.minRequestIntervalMs.toString()
+            uaBaseline = sharedRepo.defaultUserAgentOverride
+            intervalBaseline = sharedRepo.minRequestIntervalMs
+        }
+        if (thresholdChanged || windowChanged || tripChanged) {
+            sharedRepo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: thresholdBaseline
+            sharedRepo.circuitWindowMinutes = windowInput.toIntOrNull() ?: windowBaseline
+            sharedRepo.circuitTripMinutes = tripInput.toIntOrNull() ?: tripBaseline
+            thresholdInput = sharedRepo.circuitFailureThreshold.toString()
+            windowInput = sharedRepo.circuitWindowMinutes.toString()
+            tripInput = sharedRepo.circuitTripMinutes.toString()
+            thresholdBaseline = sharedRepo.circuitFailureThreshold
+            windowBaseline = sharedRepo.circuitWindowMinutes
+            tripBaseline = sharedRepo.circuitTripMinutes
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 88.dp),
     ) {
+        // [2026-06-27] カテゴリ 1: 接続・基盤
+        item {
+            CategoryHeader(
+                icon = ServerIcon,
+                title = "接続・基盤",
+                subtitle = "サーバー / アップデート / 省電力",
+            )
+        }
+
         // サーバー基本設定
         item {
             Surface(
@@ -194,15 +332,6 @@ fun SettingsTab(
                         fontSize = 12.sp,
                         color = Teal
                     )
-                    Spacer(Modifier.height(8.dp))
-
-                    Button(
-                        onClick = { onSaveTunnelSettings(tunnelTokenInput, tunnelDomainInput) },
-                        modifier = Modifier.align(Alignment.End),
-                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
-                    ) {
-                        Text("Tunnel 設定を保存")
-                    }
                 }
             }
         }
@@ -307,40 +436,22 @@ fun SettingsTab(
                     }
                     Spacer(Modifier.height(8.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    // [2026-06-20] 確認中はボタン disable + 円形スピナー表示
+                    OutlinedButton(
+                        onClick = { onManualUpdateCheck() },
+                        enabled = !updateChecking,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        // [2026-06-20] 確認中はボタン disable + 円形スピナー表示
-                        OutlinedButton(
-                            onClick = { onManualUpdateCheck() },
-                            enabled = !updateChecking,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (updateChecking) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Teal,
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text("確認中…")
-                            } else {
-                                Text("今すぐ確認")
-                            }
-                        }
-                        Button(
-                            onClick = {
-                                onSavePortalUpdateSettings(
-                                    manifestUrlInput.trim(),
-                                    checkTokenInput.trim(),
-                                    autoUpdateInput,
-                                )
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Teal)
-                        ) {
-                            Text("設定を保存")
+                        if (updateChecking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Teal,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("確認中…")
+                        } else {
+                            Text("今すぐ確認")
                         }
                     }
                     // [2026-06-20] 直近の update check 結果を表示
@@ -437,6 +548,179 @@ fun SettingsTab(
                     }
                 }
             }
+        }
+
+
+        // [2026-06-27] カテゴリ 2: fetch 動作
+        item {
+            CategoryHeader(
+                icon = FetchIcon,
+                title = "fetch 動作",
+                subtitle = "並列・タイムアウト / リクエストカスタマイズ",
+            )
+        }
+
+        // [2026-03-11] 並列処理設定
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "並列処理",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    // 並列数スライダー
+                    Text(
+                        "WebView 並列数: ${Math.round(concurrencyInput)}",
+                        fontSize = 14.sp,
+                        color = NavyDark
+                    )
+                    Slider(
+                        value = concurrencyInput,
+                        onValueChange = { concurrencyInput = it },
+                        valueRange = 1f..4f,
+                        steps = 2,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Teal,
+                            activeTrackColor = Teal
+                        )
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("1", fontSize = 11.sp, color = GrayLight)
+                        Text("8", fontSize = 11.sp, color = GrayLight)
+                    }
+                    // [2026-03-11] 注意事項
+                    if (Math.round(concurrencyInput) >= 6) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "※ 6以上はハイエンド端末推奨（メモリ不足の可能性あり）",
+                            fontSize = 11.sp,
+                            color = ErrorRed
+                        )
+                    }
+
+                }
+            }
+        }
+
+        // [2026-03-11] タイムアウト設定
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "タイムアウト制限",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Text(
+                        "クライアントが指定した値がこの上限を超える場合、サーバー側で制限されます",
+                        fontSize = 12.sp,
+                        color = GrayLight
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = maxTimeoutInput,
+                        onValueChange = { maxTimeoutInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("タイムアウト上限（10-120秒）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = maxWaitInput,
+                        onValueChange = { maxWaitInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("Wait 上限（1-30秒）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+        }
+
+        // [2026-06-26] リクエストカスタマイズ（デフォルト UA + 同一ホスト最小間隔）
+        //   Google 403 等のクライアント単位ブロックの予防策。
+        //   [2026-06-27] State 宣言は SettingsTab 上部に共通化（保存バー集約のため）
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "リクエストカスタマイズ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = NavyDark
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = uaInput,
+                        onValueChange = { uaInput = it },
+                        label = { Text("デフォルト User-Agent (空欄で WebView 既定)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        minLines = 2,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { uaInput = DESKTOP_CHROME_UA },
+                        ) {
+                            Text("デスクトップ Chrome", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { uaInput = "" },
+                        ) {
+                            Text("既定に戻す", fontSize = 12.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = intervalInput,
+                        onValueChange = { intervalInput = it.filter { c -> c.isDigit() } },
+                        label = { Text("同一ホスト最小間隔（ミリ秒、0で無効）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+            }
+        }
+
+        // [2026-06-27] カテゴリ 3: チャレンジ・ブロック
+        item {
+            CategoryHeader(
+                icon = ShieldIcon,
+                title = "チャレンジ・ブロック",
+                subtitle = "画面表示 / 自動タップ記憶 / サーキットブレーカー / オーバーレイ権限",
+            )
         }
 
         // [2026-06-25] チャレンジ自動タップ記憶（ドメイン別の学習一覧 + 削除）
@@ -554,184 +838,10 @@ fun SettingsTab(
                 }
             }
         }
-
-        // [2026-03-11] 並列処理設定
-        item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                tonalElevation = 1.dp
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "並列処理",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = NavyDark
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    // 並列数スライダー
-                    Text(
-                        "WebView 並列数: ${Math.round(concurrencyInput)}",
-                        fontSize = 14.sp,
-                        color = NavyDark
-                    )
-                    Slider(
-                        value = concurrencyInput,
-                        onValueChange = { concurrencyInput = it },
-                        valueRange = 1f..4f,
-                        steps = 2,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Teal,
-                            activeTrackColor = Teal
-                        )
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("1", fontSize = 11.sp, color = GrayLight)
-                        Text("8", fontSize = 11.sp, color = GrayLight)
-                    }
-                    // [2026-03-11] 注意事項
-                    if (Math.round(concurrencyInput) >= 6) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "※ 6以上はハイエンド端末推奨（メモリ不足の可能性あり）",
-                            fontSize = 11.sp,
-                            color = ErrorRed
-                        )
-                    }
-
-                }
-            }
-        }
-
-        // [2026-03-11] タイムアウト設定
-        item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                tonalElevation = 1.dp
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "タイムアウト制限",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = NavyDark
-                    )
-                    Text(
-                        "クライアントが指定した値がこの上限を超える場合、サーバー側で制限されます",
-                        fontSize = 12.sp,
-                        color = GrayLight
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = maxTimeoutInput,
-                        onValueChange = { maxTimeoutInput = it.filter { c -> c.isDigit() } },
-                        label = { Text("タイムアウト上限（10-120秒）") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = maxWaitInput,
-                        onValueChange = { maxWaitInput = it.filter { c -> c.isDigit() } },
-                        label = { Text("Wait 上限（1-30秒）") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                }
-            }
-        }
-
-        // [2026-06-26] リクエストカスタマイズ（デフォルト UA + 同一ホスト最小間隔）
-        //   Google 403 等のクライアント単位ブロックの予防策。
-        item {
-            val ctx = LocalContext.current
-            val repo = remember { SettingsRepository(ctx) }
-            var uaInput by remember { mutableStateOf(repo.defaultUserAgentOverride) }
-            var intervalInput by remember { mutableStateOf(repo.minRequestIntervalMs.toString()) }
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                tonalElevation = 1.dp
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "リクエストカスタマイズ",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = NavyDark
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = uaInput,
-                        onValueChange = { uaInput = it },
-                        label = { Text("デフォルト User-Agent (空欄で WebView 既定)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = false,
-                        minLines = 2,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = { uaInput = DESKTOP_CHROME_UA },
-                        ) {
-                            Text("デスクトップ Chrome", fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = { uaInput = "" },
-                        ) {
-                            Text("既定に戻す", fontSize = 12.sp)
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = intervalInput,
-                        onValueChange = { intervalInput = it.filter { c -> c.isDigit() } },
-                        label = { Text("同一ホスト最小間隔（ミリ秒、0で無効）") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            repo.defaultUserAgentOverride = uaInput.trim()
-                            repo.minRequestIntervalMs = intervalInput.toLongOrNull() ?: 0L
-                        },
-                    ) {
-                        Text("保存")
-                    }
-                }
-            }
-        }
-
         // [2026-06-26] Google サーキットブレーカー設定
+        //   [2026-06-27] State 宣言は SettingsTab 上部に共通化（保存バー集約のため）
         item {
-            val ctx = LocalContext.current
-            val repo = remember { SettingsRepository(ctx) }
-            var thresholdInput by remember { mutableStateOf(repo.circuitFailureThreshold.toString()) }
-            var windowInput by remember { mutableStateOf(repo.circuitWindowMinutes.toString()) }
-            var tripInput by remember { mutableStateOf(repo.circuitTripMinutes.toString()) }
             // 状態スナップショット表示（trip 中の host とその残り秒数）
-            var snapshotRefresh by remember { mutableIntStateOf(0) }
             val snapshot = remember(snapshotRefresh) {
                 runCatching { GoogleSearchCircuitBreaker.snapshot() }.getOrDefault(emptyMap())
             }
@@ -780,23 +890,6 @@ fun SettingsTab(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
-                    Spacer(Modifier.height(12.dp))
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            repo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: 3
-                            repo.circuitWindowMinutes = windowInput.toIntOrNull() ?: 5
-                            repo.circuitTripMinutes = tripInput.toIntOrNull() ?: 60
-                            // [2026-06-26] Codex 指摘: 空欄 / 0 入力は repo 側で 1 に丸められるので
-                            //   保存後に input を再同期して UI 表示と実値のズレを防ぐ
-                            thresholdInput = repo.circuitFailureThreshold.toString()
-                            windowInput = repo.circuitWindowMinutes.toString()
-                            tripInput = repo.circuitTripMinutes.toString()
-                        },
-                    ) {
-                        Text("保存")
-                    }
-
                     Spacer(Modifier.height(12.dp))
                     Text("現在の状態", fontSize = 13.sp, color = NavyDark, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
@@ -981,6 +1074,15 @@ fun SettingsTab(
             }
         }
 
+        // [2026-06-27] カテゴリ 4: 通知・ログ
+        item {
+            CategoryHeader(
+                icon = BellIcon,
+                title = "通知・ログ",
+                subtitle = "Slack 通知は「チャレンジ・ブロック」内 / ログ設定",
+            )
+        }
+
         // [2026-03-14] ログ設定（詳細ログモード）
         item {
             Surface(
@@ -1087,55 +1189,78 @@ fun SettingsTab(
             }
         }
 
-        // 保存ボタン
-        item {
+    }
+
+    // [2026-06-27] sticky 保存バー (画面下に常時固定)
+    Surface(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth(),
+        color = if (hasAnyDirty) Color(0xFFFFF8E6) else Color.White,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                if (hasAnyDirty) "● 未保存の変更が ${dirtyCount} 件" else "変更なし",
+                fontSize = 12.sp,
+                color = if (hasAnyDirty) Color(0xFFB57E1A) else GrayLight,
+                fontWeight = if (hasAnyDirty) FontWeight.Bold else FontWeight.Normal,
+            )
             Button(
                 onClick = {
-                    val newSettings = SettingsState(
-                        port = portInput.toIntOrNull() ?: 3000,
-                        apiKey = apiKeyInput,
-                        concurrency = Math.round(concurrencyInput),
-                        maxTimeout = (maxTimeoutInput.toIntOrNull() ?: 60).coerceIn(10, 120),
-                        maxWait = (maxWaitInput.toIntOrNull() ?: 10).coerceIn(1, 30)
-                    )
-                    onSave(newSettings)
-                    // サーバー稼働中かつ再起動が必要な設定が変更された場合のみダイアログ表示
-                    val needsRestart = serverRunning && (
-                        newSettings.port != settings.port ||
-                        newSettings.apiKey != settings.apiKey ||
-                        newSettings.concurrency != settings.concurrency ||
-                        newSettings.maxTimeout != settings.maxTimeout ||
-                        newSettings.maxWait != settings.maxWait
-                    )
                     if (needsRestart) {
                         showRestartDialog = true
+                    } else {
+                        doSave()
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                enabled = hasAnyDirty,
+                colors = ButtonDefaults.buttonColors(containerColor = Teal),
             ) {
-                Text("設定を保存")
+                Text("保存")
             }
         }
     }
+    }  // end of Box
 
-    // [2026-03-14] サーバー再起動確認ダイアログ
+    // [2026-06-27] 再起動確認ダイアログ (保存前に表示)
     if (showRestartDialog) {
         AlertDialog(
             onDismissRequest = { showRestartDialog = false },
-            title = { Text("サーバーを再起動しますか？") },
-            text = { Text("変更した設定を反映するにはサーバーの再起動が必要です。") },
+            title = { Text("サーバーの再起動が必要です") },
+            text = {
+                Text(
+                    "Port / API Key / 同時並列数 / Tunnel 設定の変更を反映するにはサーバーの再起動が必要です。" +
+                        "再起動中の数秒間は fetch リクエストを受け付けません。"
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     showRestartDialog = false
+                    doSave()
                     onRestartServer()
                 }) {
-                    Text("再起動する", color = Teal)
+                    Text("保存して再起動", color = Teal)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showRestartDialog = false }) {
-                    Text("あとで")
+                Row {
+                    TextButton(onClick = {
+                        showRestartDialog = false
+                        doSave()
+                    }) {
+                        Text("保存のみ", color = NavyDark)
+                    }
+                    TextButton(onClick = { showRestartDialog = false }) {
+                        Text("キャンセル", color = GrayLight)
+                    }
                 }
             }
         )

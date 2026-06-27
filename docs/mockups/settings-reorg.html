@@ -1,0 +1,515 @@
+<title>SalesNow Bridge 設定 再構成案</title>
+<style>
+  :root {
+    --teal: #2A9BA1;
+    --teal-dark: #27878A;
+    --teal-light: #94CDD0;
+    --navy: #283C50;
+    --navy-deep: #182F46;
+    --gray: #939DA7;
+    --bg: #F4F6F8;
+    --card: #FFFFFF;
+    --border: #E5E9EE;
+    --field-border: #D5D8DC;
+    --dirty: #B57E1A;
+    --dirty-bg: #FFF8E6;
+  }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    color: var(--navy);
+    background: var(--bg);
+    line-height: 1.55;
+  }
+  .container { max-width: 1500px; margin: 0 auto; padding: 32px 24px 80px; }
+  header h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.01em; }
+  header p { margin: 0 0 8px; color: var(--gray); font-size: 13px; }
+
+  .grid3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+    margin-top: 24px;
+  }
+  @media (max-width: 1200px) { .grid3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 800px) { .grid3 { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 18px 20px; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .panel-head h2 { margin: 0; font-size: 15px; }
+  .panel-sub { color: var(--gray); font-size: 12px; margin: 0 0 14px; }
+  .tag-line { font-size: 11px; color: var(--teal-dark); background: #E1F1F2; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+
+  /* 端末画面: 保存バーを sticky 固定のため flex */
+  .phone {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    height: 820px;
+    overflow: hidden;
+  }
+  .phone-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 12px 12px;
+  }
+  .phone-scroll::-webkit-scrollbar { width: 6px; }
+  .phone-scroll::-webkit-scrollbar-thumb { background: #D5D8DC; border-radius: 3px; }
+  .phone-head {
+    background: var(--teal); color: white; border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 12px;
+    font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .phone-head .ver { font-weight: 400; opacity: 0.85; font-size: 11px; }
+  .phone-tabs {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    background: white; border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 12px; overflow: hidden;
+  }
+  .phone-tab { text-align: center; padding: 10px 4px; font-size: 12px; color: var(--gray); border-right: 1px solid var(--border); }
+  .phone-tab:last-child { border-right: 0; }
+  .phone-tab.active { color: var(--teal-dark); font-weight: 700; box-shadow: inset 0 -2px 0 var(--teal); }
+
+  /* フィールド */
+  .field { margin: 0 0 10px; }
+  .field-label { font-size: 11px; color: var(--gray); margin: 0 0 4px; }
+  .input { width: 100%; box-sizing: border-box; border: 1px solid var(--field-border); border-radius: 6px; padding: 7px 9px; font-size: 12px; background: white; color: var(--navy); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .input.masked { letter-spacing: 0.1em; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > .input { flex: 1; }
+  .btn { display: inline-block; border: 1px solid var(--teal); color: var(--teal-dark); background: white; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; }
+  .btn.primary { background: var(--teal); color: white; border-color: var(--teal); }
+  .btn.ghost { border-color: var(--field-border); color: var(--navy); }
+  .btn.danger { color: #B23D1A; border-color: #F5C5B5; }
+  .btn.full { display: block; width: 100%; text-align: center; }
+
+  /* トグル */
+  .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+  .toggle-row .label { font-size: 12px; }
+  .toggle-row .label .desc { display: block; font-size: 10.5px; color: var(--gray); margin-top: 2px; }
+  .toggle { width: 36px; height: 20px; background: var(--teal); border-radius: 999px; position: relative; flex-shrink: 0; }
+  .toggle::after { content: ''; width: 16px; height: 16px; background: white; border-radius: 50%; position: absolute; top: 2px; right: 2px; }
+  .toggle.off { background: #C9CED4; }
+  .toggle.off::after { left: 2px; right: auto; }
+
+  /* ラジオ */
+  .radio-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; }
+  .radio { width: 16px; height: 16px; border: 2px solid var(--field-border); border-radius: 50%; flex-shrink: 0; margin-top: 2px; position: relative; }
+  .radio.on { border-color: var(--teal); }
+  .radio.on::after { content: ''; position: absolute; inset: 2px; background: var(--teal); border-radius: 50%; }
+  .radio-row .label { font-size: 12px; }
+  .radio-row .label .desc { display: block; font-size: 10.5px; color: var(--gray); margin-top: 1px; }
+
+  /* スライダー */
+  .slider-row { padding: 4px 0; }
+  .slider-track { height: 4px; background: #E5E9EE; border-radius: 2px; position: relative; }
+  .slider-track::before { content: ''; position: absolute; inset: 0 0 0 0; background: var(--teal); border-radius: 2px; }
+  .slider-track::after { content: ''; position: absolute; left: calc(100% - 8px); top: -6px; width: 16px; height: 16px; background: var(--teal); border-radius: 50%; }
+  .slider-meta { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--gray); margin-top: 6px; }
+
+  /* リスト */
+  .list-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px dashed #EAEDF1; }
+  .list-row:first-child { border-top: 0; }
+  .list-row .label { font-size: 12px; }
+  .list-row .label .desc { display: block; font-size: 10.5px; color: var(--gray); margin-top: 1px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  /* カテゴリ共通 */
+  .category { background: white; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+  .category-body { padding: 6px 14px 12px; }
+  .subsection { padding: 10px 0; border-bottom: 1px dashed #EAEDF1; }
+  .subsection:last-child { border-bottom: 0; }
+  .subsection-title { font-size: 12.5px; font-weight: 700; color: var(--navy); margin: 0 0 4px; }
+  .subsection .sub-desc { color: var(--gray); font-size: 11px; margin: 0 0 6px; }
+
+  /* ★ パターン A: シンプル見出し (タイポグラフィのみ) */
+  .style-a .category-head {
+    padding: 14px 16px 8px;
+    border-bottom: 0;
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--navy);
+    letter-spacing: -0.01em;
+  }
+  .style-a .category-head .subtitle {
+    display: block;
+    font-size: 11px;
+    color: var(--gray);
+    font-weight: 400;
+    margin-top: 2px;
+  }
+  .style-a .category-body { padding-top: 0; }
+
+  /* ★ パターン B: アイコン付き */
+  .style-b .category-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    background: #FBFCFD;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .style-b .category-head .icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    background: #E1F1F2;
+    color: var(--teal-dark);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .style-b .category-head .icon svg { width: 18px; height: 18px; }
+  .style-b .category-head .title { display: flex; flex-direction: column; line-height: 1.2; }
+  .style-b .category-head .title .sub { font-size: 10.5px; color: var(--gray); font-weight: 400; margin-top: 2px; }
+
+  /* ★ パターン C: カラードット + 見出し */
+  .style-c .category-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 13px 14px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .style-c .category-head .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .style-c .category-head .dot.c1 { background: var(--teal); }
+  .style-c .category-head .dot.c2 { background: #4F8EE5; }
+  .style-c .category-head .dot.c3 { background: #C5703B; }
+  .style-c .category-head .dot.c4 { background: var(--navy); }
+  .style-c .category-head .title { display: flex; flex-direction: column; line-height: 1.2; }
+  .style-c .category-head .title .sub { font-size: 10.5px; color: var(--gray); font-weight: 400; margin-top: 2px; }
+
+  /* ★ 保存バー (常時固定) */
+  .save-bar {
+    background: white;
+    border-top: 1px solid var(--border);
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .save-bar.dirty { background: var(--dirty-bg); border-top-color: #EBC97A; }
+  .save-bar .status { font-size: 12px; color: var(--gray); }
+  .save-bar.dirty .status { color: var(--dirty); font-weight: 700; }
+  .save-bar .actions { display: flex; gap: 8px; }
+
+  /* 説明 */
+  .notes { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-top: 28px; }
+  .notes h2 { margin: 0 0 12px; font-size: 16px; }
+  .notes h3 { margin: 16px 0 6px; font-size: 13px; color: var(--teal-dark); }
+  .notes ul { margin: 4px 0 0 18px; padding: 0; color: #4A5868; font-size: 13px; }
+  .notes li { margin-bottom: 4px; }
+  .notes p { font-size: 13px; color: #4A5868; margin: 6px 0; }
+  .notes .pros { color: #2E7B40; font-weight: 700; }
+  .notes .cons { color: #B23D1A; font-weight: 700; }
+</style>
+
+<div class="container">
+  <header>
+    <h1>セクション区切り 3 パターン比較</h1>
+    <p>同じ内容を 3 つの見出しスタイルで比較。保存バーは画面下に sticky で常時固定。</p>
+  </header>
+
+  <div class="grid3">
+
+    <!-- ============ パターン A: シンプル見出し ============ -->
+    <div class="panel">
+      <div class="panel-head"><h2>A. シンプル見出し</h2><span class="tag-line">タイポグラフィのみ</span></div>
+      <p class="panel-sub">太字テキスト + 細い副題のみ。装飾なしで一番ノイズが少ない。</p>
+
+      <div class="phone style-a">
+        <div class="phone-scroll">
+          <div class="phone-head"><span>SalesNow Bridge</span><span class="ver">v1.2.29</span></div>
+          <div class="phone-tabs"><div class="phone-tab">ダッシュボード</div><div class="phone-tab">ログ</div><div class="phone-tab active">設定</div></div>
+
+          <div class="category">
+            <div class="category-head">接続・基盤<span class="subtitle">サーバー / アップデート / 省電力</span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">サーバー</p>
+                <div class="field"><div class="field-label">Port</div><input class="input" value="3000" readonly></div>
+                <div class="field"><div class="field-label">API Key</div><div class="row"><input class="input masked" value="•••••••••••" readonly><span class="btn ghost">表示</span></div></div>
+                <div class="field"><div class="field-label">Tunnel Token</div><input class="input masked" value="•••••••••••" readonly></div>
+                <div class="field"><div class="field-label">Tunnel Domain</div><input class="input" value="bridge1.salesnow-cs.jp" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">アップデート</p>
+                <div class="toggle-row"><span class="label">自動チェック (1 時間ごと)</span><span class="toggle"></span></div>
+                <span class="btn full ghost" style="margin-top:6px;">今すぐ確認 ▶</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">fetch 動作<span class="subtitle">並列 / タイムアウト / リクエスト</span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">タイムアウト・並列</p>
+                <div class="field"><div class="field-label">同時並列数 (1-4): 4</div><div class="slider-row"><div class="slider-track"></div><div class="slider-meta"><span>1</span><span>4</span></div></div></div>
+                <div class="field"><div class="field-label">タイムアウト上限 (秒)</div><input class="input" value="60" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">リクエストカスタマイズ</p>
+                <div class="field"><div class="field-label">デフォルト User-Agent</div><input class="input" value="Chrome/131..." readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">チャレンジ・ブロック<span class="subtitle">画面表示 / 自動タップ / サーキットブレーカー</span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">画面表示モード</p>
+                <div class="radio-row"><span class="radio on"></span><span class="label">手動タップが必要な時だけ</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">チャレンジ認証すべてを表示</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">すべて表示</span></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">Google サーキットブレーカー</p>
+                <div class="field"><div class="field-label">失敗閾値</div><input class="input" value="3" readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">通知・ログ<span class="subtitle">Slack / ログ</span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">Slack 通知</p>
+                <div class="field"><div class="field-label">Webhook URL</div><input class="input" value="https://hooks.slack.com/..." readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">ログ</p>
+                <div class="toggle-row"><span class="label">詳細ログ</span><span class="toggle off"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="save-bar dirty">
+          <span class="status">● 未保存の変更が 2 件</span>
+          <div class="actions"><span class="btn ghost">破棄</span><span class="btn primary">保存</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ パターン B: アイコン付き ============ -->
+    <div class="panel">
+      <div class="panel-head"><h2>B. アイコン + 見出し</h2><span class="tag-line">lucide ライン</span></div>
+      <p class="panel-sub">単色ラインアイコン + 見出し。視覚的な手がかりで素早く区別できる。</p>
+
+      <div class="phone style-b">
+        <div class="phone-scroll">
+          <div class="phone-head"><span>SalesNow Bridge</span><span class="ver">v1.2.29</span></div>
+          <div class="phone-tabs"><div class="phone-tab">ダッシュボード</div><div class="phone-tab">ログ</div><div class="phone-tab active">設定</div></div>
+
+          <div class="category">
+            <div class="category-head">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
+              <span class="title">接続・基盤<span class="sub">サーバー / アップデート / 省電力</span></span>
+            </div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">サーバー</p>
+                <div class="field"><div class="field-label">Port</div><input class="input" value="3000" readonly></div>
+                <div class="field"><div class="field-label">API Key</div><div class="row"><input class="input masked" value="•••••••••••" readonly><span class="btn ghost">表示</span></div></div>
+                <div class="field"><div class="field-label">Tunnel Token</div><input class="input masked" value="•••••••••••" readonly></div>
+                <div class="field"><div class="field-label">Tunnel Domain</div><input class="input" value="bridge1.salesnow-cs.jp" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">アップデート</p>
+                <div class="toggle-row"><span class="label">自動チェック (1 時間ごと)</span><span class="toggle"></span></div>
+                <span class="btn full ghost" style="margin-top:6px;">今すぐ確認 ▶</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="m11 4 8 8-8 8"/></svg></span>
+              <span class="title">fetch 動作<span class="sub">並列 / タイムアウト / リクエスト</span></span>
+            </div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">タイムアウト・並列</p>
+                <div class="field"><div class="field-label">同時並列数 (1-4): 4</div><div class="slider-row"><div class="slider-track"></div><div class="slider-meta"><span>1</span><span>4</span></div></div></div>
+                <div class="field"><div class="field-label">タイムアウト上限 (秒)</div><input class="input" value="60" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">リクエストカスタマイズ</p>
+                <div class="field"><div class="field-label">デフォルト User-Agent</div><input class="input" value="Chrome/131..." readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+              <span class="title">チャレンジ・ブロック<span class="sub">画面表示 / 自動タップ / サーキット</span></span>
+            </div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">画面表示モード</p>
+                <div class="radio-row"><span class="radio on"></span><span class="label">手動タップが必要な時だけ</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">チャレンジ認証すべてを表示</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">すべて表示</span></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">Google サーキットブレーカー</p>
+                <div class="field"><div class="field-label">失敗閾値</div><input class="input" value="3" readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head">
+              <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg></span>
+              <span class="title">通知・ログ<span class="sub">Slack / ログ</span></span>
+            </div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">Slack 通知</p>
+                <div class="field"><div class="field-label">Webhook URL</div><input class="input" value="https://hooks.slack.com/..." readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">ログ</p>
+                <div class="toggle-row"><span class="label">詳細ログ</span><span class="toggle off"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="save-bar dirty">
+          <span class="status">● 未保存の変更が 2 件</span>
+          <div class="actions"><span class="btn ghost">破棄</span><span class="btn primary">保存</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ パターン C: カラードット ============ -->
+    <div class="panel">
+      <div class="panel-head"><h2>C. カラードット</h2><span class="tag-line">色で区別</span></div>
+      <p class="panel-sub">カテゴリごとに小さな色付きドットで区別。シンプルだが視覚的にグループ感が出る。</p>
+
+      <div class="phone style-c">
+        <div class="phone-scroll">
+          <div class="phone-head"><span>SalesNow Bridge</span><span class="ver">v1.2.29</span></div>
+          <div class="phone-tabs"><div class="phone-tab">ダッシュボード</div><div class="phone-tab">ログ</div><div class="phone-tab active">設定</div></div>
+
+          <div class="category">
+            <div class="category-head"><span class="dot c1"></span><span class="title">接続・基盤<span class="sub">サーバー / アップデート / 省電力</span></span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">サーバー</p>
+                <div class="field"><div class="field-label">Port</div><input class="input" value="3000" readonly></div>
+                <div class="field"><div class="field-label">API Key</div><div class="row"><input class="input masked" value="•••••••••••" readonly><span class="btn ghost">表示</span></div></div>
+                <div class="field"><div class="field-label">Tunnel Token</div><input class="input masked" value="•••••••••••" readonly></div>
+                <div class="field"><div class="field-label">Tunnel Domain</div><input class="input" value="bridge1.salesnow-cs.jp" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">アップデート</p>
+                <div class="toggle-row"><span class="label">自動チェック (1 時間ごと)</span><span class="toggle"></span></div>
+                <span class="btn full ghost" style="margin-top:6px;">今すぐ確認 ▶</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head"><span class="dot c2"></span><span class="title">fetch 動作<span class="sub">並列 / タイムアウト / リクエスト</span></span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">タイムアウト・並列</p>
+                <div class="field"><div class="field-label">同時並列数 (1-4): 4</div><div class="slider-row"><div class="slider-track"></div><div class="slider-meta"><span>1</span><span>4</span></div></div></div>
+                <div class="field"><div class="field-label">タイムアウト上限 (秒)</div><input class="input" value="60" readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">リクエストカスタマイズ</p>
+                <div class="field"><div class="field-label">デフォルト User-Agent</div><input class="input" value="Chrome/131..." readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head"><span class="dot c3"></span><span class="title">チャレンジ・ブロック<span class="sub">画面表示 / 自動タップ / サーキット</span></span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">画面表示モード</p>
+                <div class="radio-row"><span class="radio on"></span><span class="label">手動タップが必要な時だけ</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">チャレンジ認証すべてを表示</span></div>
+                <div class="radio-row"><span class="radio"></span><span class="label">すべて表示</span></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">Google サーキットブレーカー</p>
+                <div class="field"><div class="field-label">失敗閾値</div><input class="input" value="3" readonly></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="category">
+            <div class="category-head"><span class="dot c4"></span><span class="title">通知・ログ<span class="sub">Slack / ログ</span></span></div>
+            <div class="category-body">
+              <div class="subsection">
+                <p class="subsection-title">Slack 通知</p>
+                <div class="field"><div class="field-label">Webhook URL</div><input class="input" value="https://hooks.slack.com/..." readonly></div>
+              </div>
+              <div class="subsection">
+                <p class="subsection-title">ログ</p>
+                <div class="toggle-row"><span class="label">詳細ログ</span><span class="toggle off"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="save-bar dirty">
+          <span class="status">● 未保存の変更が 2 件</span>
+          <div class="actions"><span class="btn ghost">破棄</span><span class="btn primary">保存</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 比較 -->
+  <div class="notes">
+    <h2>3 パターン比較</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
+      <thead>
+        <tr style="background:#F4F6F8;color:var(--gray);font-size:11px;letter-spacing:0.04em;">
+          <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">パターン</th>
+          <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">向いている状況</th>
+          <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">注意点</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><b>A. シンプル見出し</b></td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="pros">最少ノイズ</span>。文字情報が主役で、カテゴリ数が今後変動しても破綻しにくい</td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="cons">パッと見の区別力が弱い</span>。スクロールで境目を見落としやすい</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><b>B. アイコン付き</b></td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="pros">視覚的に即区別</span>できる。トラブル時に該当カテゴリへ素早く辿り着ける</td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="cons">アイコンの意味を覚える必要</span>。カテゴリ追加のたびに適切なアイコンを選ぶ手間</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><b>C. カラードット</b></td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="pros">最小コスト</span>で視覚的なグルーピング感。色だけ覚えれば済む</td>
+          <td style="padding:10px;border-bottom:1px solid var(--border);"><span class="cons">色弱への配慮</span>。色だけに頼らずテキストも併記しているので実害は小</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>保存バー（3 パターン共通）</h3>
+    <ul>
+      <li><b>常時画面下に固定</b>（端末画面の高さに関わらず sticky）</li>
+      <li>変更なし → グレー「変更なし」</li>
+      <li>変更あり → 橙色ハイライト「● 未保存の変更が N 件」+「破棄」「保存」</li>
+      <li>保存後、再起動が必要な変更（Port / API Key / Tunnel / 同時並列数）を含む場合のみポップアップで確認</li>
+    </ul>
+
+    <h3>推奨</h3>
+    <p><b>B. アイコン付き</b>が運用観点で最も実用的です。設定タブを開く時点で「何を直したいか」を持っている運用者にとって、アイコンによる即座のスキャン性が効きます。SalesNow ブランドの teal を保ちつつ、lucide ラインアイコンで装飾過剰にならない範囲に収めています。</p>
+    <p>シンプルさ重視なら A、軽い差別化なら C も成立します。決め切れなければ B → A の順での導入が無難です。</p>
+  </div>
+</div>
