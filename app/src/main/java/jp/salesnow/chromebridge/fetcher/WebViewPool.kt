@@ -364,8 +364,9 @@ class WebViewPool(
                                 !lowerUrl.contains("google.co.jp/sorry") &&
                                 !hasRecaptcha  // [Codex 指摘] reCAPTCHA iframe があれば常に本物 challenge と扱う
                             if (isOnlyGoogleSearchBlocked && !googleSerpRedetectScheduled.getAndSet(true)) {
-                                onLog("Google /search 初期 HTML 段階の可能性 → 1.5s 待機して再判定 (bodyLen=$bodyLen, worker=$workerId)")
-                                mainHandler.postDelayed({ runDetect() }, 1500L)
+                                // [2026-06-27] 1.5s → 3s に延長 (実機ログから 1.5s では SPA レンダリング未完のケース多発)
+                                onLog("Google /search 初期 HTML 段階の可能性 → 3s 待機して再判定 (bodyLen=$bodyLen, worker=$workerId)")
+                                mainHandler.postDelayed({ runDetect() }, 3000L)
                                 return@evaluateJavascript
                             }
                             // チャレンジページ検知 → ユーザーに画面を表示
