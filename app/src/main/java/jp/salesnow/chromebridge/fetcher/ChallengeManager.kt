@@ -233,11 +233,13 @@ object ChallengeManager {
     /**
      * [2026-06-26] Google 検索 SERP の本文文字数下限 (innerText 基準)。
      *   この値以下なら自動化ブロック疑い → challenge 扱い。
-     *   正常な SERP は最低でも数千文字あるため 800 は余裕がある（誤検知より検知漏れ重視）。
-     * [2026-06-27] 200 に厳格化したが reCAPTCHA ページ (200-700 文字) が判定外になり
-     *   ChallengeActivity が起動せず手動突破不可能になっていたため、800 に戻す。
+     * [2026-06-27] 1.2.34 相当に再度 200 へ厳格化。reCAPTCHA ページは URL ベース
+     *   (google.com/sorry リダイレクト) で別途検知されるため、bodyLen 200 でも
+     *   ChallengeActivity は起動する。SPA 初期 HTML 段階の誤検知 (loading→SERP に化ける)
+     *   を減らすために 200 にする。実装上、本文ベース (isGoogleOrigin403) + SPA 再 detect
+     *   と組み合わせて本物の challenge だけを拾う。
      */
-    private const val GOOGLE_SEARCH_MIN_BODY_LEN = 800
+    private const val GOOGLE_SEARCH_MIN_BODY_LEN = 200
 
     /** Google 検索 SERP の対象ホスト (host のみ・厳密一致)。サブドメイン無しと www. の両方を許可。 */
     private val GOOGLE_SEARCH_HOSTS = setOf(
