@@ -230,6 +230,25 @@ fun SettingsTab(
         }
     }
 
+    // [2026-06-27] 全 input を baseline で上書き = 入力前の値に戻す
+    val doDiscard: () -> Unit = {
+        portInput = portBaseline.toString()
+        apiKeyInput = apiKeyBaseline
+        concurrencyInput = concurrencyBaseline.toFloat()
+        maxTimeoutInput = maxTimeoutBaseline.toString()
+        maxWaitInput = maxWaitBaseline.toString()
+        tunnelTokenInput = tunnelTokenBaseline
+        tunnelDomainInput = tunnelDomainBaseline
+        manifestUrlInput = manifestUrlBaseline
+        checkTokenInput = checkTokenBaseline
+        autoUpdateInput = autoUpdateBaseline
+        uaInput = uaBaseline
+        intervalInput = intervalBaseline.toString()
+        thresholdInput = thresholdBaseline.toString()
+        windowInput = windowBaseline.toString()
+        tripInput = tripBaseline.toString()
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -1213,18 +1232,26 @@ fun SettingsTab(
                 color = if (hasAnyDirty) Color(0xFFB57E1A) else GrayLight,
                 fontWeight = if (hasAnyDirty) FontWeight.Bold else FontWeight.Normal,
             )
-            Button(
-                onClick = {
-                    if (needsRestart) {
-                        showRestartDialog = true
-                    } else {
-                        doSave()
-                    }
-                },
-                enabled = hasAnyDirty,
-                colors = ButtonDefaults.buttonColors(containerColor = Teal),
-            ) {
-                Text("保存")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { doDiscard() },
+                    enabled = hasAnyDirty,
+                ) {
+                    Text("破棄")
+                }
+                Button(
+                    onClick = {
+                        if (needsRestart) {
+                            showRestartDialog = true
+                        } else {
+                            doSave()
+                        }
+                    },
+                    enabled = hasAnyDirty,
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal),
+                ) {
+                    Text("保存")
+                }
             }
         }
     }
