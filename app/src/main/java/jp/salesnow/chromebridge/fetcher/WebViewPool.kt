@@ -274,6 +274,10 @@ class WebViewPool(
         // [2026-06-27] Google origin 403 を本文ベースで検知したら true。
         //   challenge 経路にも入っている可能性があるので、最終 return 直前に 499 へ倒す。
         val googleOrigin403Detected = AtomicBoolean(false)
+        // [2026-06-27] Google /search の SPA 初期 HTML 段階で isGoogleSearchBlocked 単独判定された
+        //   ケース (本文 800 文字以下) は SPA レンダリング待ちのため 1.5s 後に再 detect する。
+        //   一度しか scheduled しないようフラグを保持。
+        val googleSerpRedetectScheduled = AtomicBoolean(false)
         // [2026-05-18] fetch 確定後に遅延コールバックが古い WebView を触らないためのフラグ
         val settled = AtomicBoolean(false)
         // [2026-04-12] チャレンジ計測用
@@ -286,24 +290,24 @@ class WebViewPool(
             wv.webViewClient = object : WebViewClient() {
                 private var extracted = false
 
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    if (extracted || settled.get()) return
-                    if (url == null || url == "about:blank") return
+                // [2026-06-25] タイトル + URL + reCAPTCHA iframe + 本文長の複合判定。
+                //   evaluateJavascript の callback には JSON.stringify(...) の戻り値が
+                //   さらに文字列リテラルとして来るため、二段 parse する。
+                //   parse 失敗時は challenge 判定を skip して通常抽出に進む。
+                // [2026-06-27] bodySample (先頭 500 文字) を追加。challenge 判定経路でも
+                //   Google origin 403 を本文ベースで検知して即 499 に倒すため。
+                private val detectJs = "JSON.stringify({" +
+                    "title: document.title||''," +
+                    "url: location.href||''," +
+                    "recaptcha: !!document.querySelector(" +
+                        "'iframe[src*=\"recaptcha\"],iframe[src*=\"google.com/recaptcha\"]')," +
+                    "bodyLen: (document.body && document.body.innerText || '').trim().length," +
+                    "bodySample: (document.body && document.body.innerText || '').substring(0, 500)" +
+                    "})"
 
-                    // [2026-06-25] タイトル + URL + reCAPTCHA iframe + 本文長の複合判定。
-                    //   evaluateJavascript の callback には JSON.stringify(...) の戻り値が
-                    //   さらに文字列リテラルとして来るため、二段 parse する。
-                    //   parse 失敗時は challenge 判定を skip して通常抽出に進む。
-                    // [2026-06-27] bodySample (先頭 500 文字) を追加。challenge 判定経路でも
-                    //   Google origin 403 を本文ベースで検知して即 499 に倒すため。
-                    val detectJs = "JSON.stringify({" +
-                        "title: document.title||''," +
-                        "url: location.href||''," +
-                        "recaptcha: !!document.querySelector(" +
-                            "'iframe[src*=\"recaptcha\"],iframe[src*=\"google.com/recaptcha\"]')," +
-                        "bodyLen: (document.body && document.body.innerText || '').trim().length," +
-                        "bodySample: (document.body && document.body.innerText || '').substring(0, 500)" +
-                        "})"
+                // [2026-06-27] detect 処理を関数化。SPA 初期 HTML 段階の誤検知を防ぐため再 detect を可能に。
+                val runDetect: () -> Unit = run@{
+                    if (extracted || settled.get()) return@run
                     wv.evaluateJavascript(detectJs) { jsonRaw ->
                         if (extracted || settled.get()) return@evaluateJavascript
                         var title = ""
@@ -348,12 +352,26 @@ class WebViewPool(
                         }
 
                         if (parsedOk && ChallengeManager.isChallenge(title, pageUrl, hasRecaptcha, bodyLen)) {
+                            // [2026-06-27] Google /search で isGoogleSearchBlocked 単独で判定された場合は
+                            //   SPA 初期 HTML 段階の誤検知の可能性が高い (loading→SERP に化ける)。
+                            //   1.5 秒待って再 detect。reCAPTCHA / sorry / title マッチ判定があれば本物 challenge なので
+                            //   この遅延は走らない。
+                            val lowerUrl = pageUrl.lowercase()
+                            val isGoogleBlocked = ChallengeManager.isGoogleSearchBlocked(pageUrl, bodyLen)
+                            val isOnlyGoogleSearchBlocked = isGoogleBlocked &&
+                                !ChallengeManager.isChallengeTitle(title) &&
+                                !lowerUrl.contains("google.com/sorry") &&
+                                !lowerUrl.contains("google.co.jp/sorry") &&
+                                !hasRecaptcha  // [Codex 指摘] reCAPTCHA iframe があれば常に本物 challenge と扱う
+                            if (isOnlyGoogleSearchBlocked && !googleSerpRedetectScheduled.getAndSet(true)) {
+                                onLog("Google /search 初期 HTML 段階の可能性 → 1.5s 待機して再判定 (bodyLen=$bodyLen, worker=$workerId)")
+                                mainHandler.postDelayed({ runDetect() }, 1500L)
+                                return@evaluateJavascript
+                            }
                             // チャレンジページ検知 → ユーザーに画面を表示
                             challengeDetected.set(true)
                             if (!challengeShown.getAndSet(true)) {
                                 challengeStartMs = System.currentTimeMillis()
-                                val lowerUrl = pageUrl.lowercase()
-                                val isGoogleBlocked = ChallengeManager.isGoogleSearchBlocked(pageUrl, bodyLen)
                                 val kind = when {
                                     lowerUrl.contains("google.com/sorry") ||
                                         lowerUrl.contains("google.co.jp/sorry") -> "Google sorry"
@@ -415,6 +433,12 @@ class WebViewPool(
                             }, request.wait * 1000L)
                         }
                     }
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    if (extracted || settled.get()) return
+                    if (url == null || url == "about:blank") return
+                    runDetect()
                 }
 
                 override fun onReceivedError(
