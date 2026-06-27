@@ -313,6 +313,38 @@ class WebViewPool(
                     "bodySample: (document.body && document.body.innerText || '').substring(0, 500)" +
                     "})"
 
+                // [2026-06-27] humanize: 抽出前にダミーのマウス操作と画面スクロールを実行。
+                //   bot 検出の典型シグナル「ページ開いて即抽出する自動化パターン」を緩和。
+                //   - mousemove/mouseover を 2 箇所 (ランダム座標 + 200ms 後に別座標) で発火
+                //   - window.scrollTo (smooth) で下に N px → 600ms 後に少し戻す
+                //   ChallengeActivity / AlwaysShow モード時には画面で scroll が視覚的に見える。
+                private val humanizeJs = """
+                    (function(){
+                      try {
+                        var w = window.innerWidth || 1000;
+                        var h = window.innerHeight || 600;
+                        var x1 = Math.floor(Math.random() * w);
+                        var y1 = Math.floor(Math.random() * h);
+                        ['mousemove','mouseover'].forEach(function(t){
+                          document.dispatchEvent(new MouseEvent(t,{clientX:x1,clientY:y1,bubbles:true,cancelable:true}));
+                        });
+                        setTimeout(function(){
+                          var x2 = Math.floor(Math.random() * w);
+                          var y2 = Math.floor(Math.random() * h);
+                          ['mousemove','mouseover'].forEach(function(t){
+                            document.dispatchEvent(new MouseEvent(t,{clientX:x2,clientY:y2,bubbles:true,cancelable:true}));
+                          });
+                        }, 200);
+                        var sy = Math.floor(Math.random() * 300) + 250;
+                        window.scrollTo({top: sy, behavior: 'smooth'});
+                        setTimeout(function(){
+                          window.scrollTo({top: Math.floor(sy * 0.3), behavior: 'smooth'});
+                        }, 600);
+                        return 'humanize ok mouse=('+x1+','+y1+') scroll='+sy;
+                      } catch(e) { return 'humanize err: '+e.message; }
+                    })()
+                """.trimIndent()
+
                 // [2026-06-27] detect 処理を関数化。SPA 初期 HTML 段階の誤検知を防ぐため再 detect を可能に。
                 val runDetect: () -> Unit = run@{
                     if (extracted || settled.get()) return@run
@@ -417,26 +449,47 @@ class WebViewPool(
                         } else {
                             // 通常ページ → コンテンツ抽出
                             extracted = true
-                            // チャレンジ画面 or 常時表示モードで開いていたら閉じる
+                            // [2026-06-27] AlwaysShow モード時は humanize 後に dismiss
+                            //   = ユーザーが画面で humanize の scroll を視覚的に確認できるようにする
+                            val wasAlwaysShown = alwaysShown.get()
+                            // チャレンジ画面 (= challenge 検知由来) は即 dismiss (reCAPTCHA 操作後すぐ閉じる)
                             if (challengeShown.get()) {
                                 val elapsed = System.currentTimeMillis() - challengeStartMs
                                 onLog("チャレンジ成功: domain=$challengeDomain ${elapsed}ms (worker=$workerId)")
                                 onChallengeResult(true)
                                 // [2026-06-10] Codex#4: 自分の WebView を明示指定して dismiss
                                 mainHandler.post { ChallengeManager.dismiss(wv) }
-                            } else if (alwaysShown.get()) {
-                                // [2026-06-27] displayMode==ALL で常時表示していた WebView を閉じる
-                                mainHandler.post { ChallengeManager.dismiss(wv) }
                             }
+                            // ※ AlwaysShow の dismiss は humanize callback 内で行う (画面で scroll を見せるため)
                             mainHandler.postDelayed({
                                 // [2026-05-18] fetch が既に確定していたら古い WebView を触らない
                                 if (settled.get()) return@postDelayed
-                                val js = if (request.mode == "dom") JsExtractors.EXTRACT_DOM
-                                         else JsExtractors.EXTRACT_TEXT
-                                wv.evaluateJavascript(js) { result ->
+                                // [2026-06-27] humanize: 抽出前にダミーのマウス操作とスクロールを実行
+                                //   bot 検出のシグナル (=「ページ開いて即抽出する」自動化パターン) を緩和。
+                                //   challenge 検知時には到達しない (challenge 経路は別)。
+                                //   AlwaysShow モード時には画面に WebView が attach 済なので、
+                                //   smooth scroll が視覚的に確認可能 (このため AlwaysShow の dismiss は
+                                //   humanize 後に遅延させる)。
+                                wv.evaluateJavascript(humanizeJs) { humanizeResult ->
                                     if (settled.get()) return@evaluateJavascript
-                                    jsResult = result
-                                    latch.countDown()
+                                    onLog("humanize 実行: $humanizeResult (worker=$workerId)")
+                                    // AlwaysShow モード用の遅延 dismiss (humanize の smooth scroll 完了後)
+                                    if (wasAlwaysShown) {
+                                        mainHandler.postDelayed({
+                                            mainHandler.post { ChallengeManager.dismiss(wv) }
+                                        }, 1300L)  // scroll smooth (600ms) + 戻し (600ms) + 余裕 100ms
+                                    }
+                                    // humanize 完了後 700ms 待って extract (smooth scroll の完了待ち)
+                                    mainHandler.postDelayed({
+                                        if (settled.get()) return@postDelayed
+                                        val js = if (request.mode == "dom") JsExtractors.EXTRACT_DOM
+                                                 else JsExtractors.EXTRACT_TEXT
+                                        wv.evaluateJavascript(js) { result ->
+                                            if (settled.get()) return@evaluateJavascript
+                                            jsResult = result
+                                            latch.countDown()
+                                        }
+                                    }, 700L)
                                 }
                             }, request.wait * 1000L)
                         }
