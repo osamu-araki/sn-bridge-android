@@ -244,15 +244,18 @@ class WebViewPool(
         val host = try {
             java.net.URI(url).host?.lowercase()
         } catch (_: Exception) { null } ?: return true
+        // [2026-06-27] bot 検出回避: 規則的な間隔 (例: 6.0s 毎) を避けるため
+        //   各リクエストの開始時刻に 0-1000ms の random jitter を加算する
+        val jitterMs = (0..1000).random().toLong()
         val waitMs = synchronized(throttleLock) {
             val now = System.currentTimeMillis()
             val nextAllowed = nextAllowedAtByHost[host] ?: 0L
-            val startAt = maxOf(nextAllowed, now)
+            val startAt = maxOf(nextAllowed, now) + jitterMs
             nextAllowedAtByHost[host] = startAt + intervalMs
             startAt - now
         }
         if (waitMs > 0L) {
-            onLog("throttle: host=$host wait=${waitMs}ms")
+            onLog("throttle: host=$host wait=${waitMs}ms (jitter=${jitterMs}ms)")
             try { Thread.sleep(waitMs) } catch (_: InterruptedException) {
                 // [2026-06-26] Codex 指摘: ここで interrupt() を立てると後続の Semaphore.tryAcquire
                 //   が InterruptedException を投げて fetch() 側でハンドルされないため、明示的に
@@ -454,33 +457,69 @@ class WebViewPool(
                     latch.countDown()
                 }
 
-                // [2026-06-27] HTTP layer で status code を捕捉 (FetchResult.httpStatus / http.log /
-                //   JSON http_status に反映する記録専用)。
-                //   メインフレームのみ反映。サブリソース (iframe/img/css) のエラーは無視。
-                //   1.2.32 相当の挙動に戻すため、CircuitBreaker.recordFailure / 即 499 経路には倒さない。
-                //   Google 403 でも従来通り URL ベース isGoogleSearchBlocked + ChallengeActivity 経路に任せる。
+                // [2026-06-27] HTTP layer で status code を捕捉。メインフレームのみ反映。
+                //   FetchResult.httpStatus / http.log / JSON http_status に記録。
+                //   Google host 限定で:
+                //     - status=403 → 完全ブロック扱い → CircuitBreaker.recordFailure + 即 499 (extracted=true / latch.countDown)
+                //     - status=429 → sorry リダイレクト (レート制限) 扱い → ChallengeActivity 起動 (手動 reCAPTCHA 突破可能)
+                //     - 200 は誤認しないため何もしない (通常 SERP)
                 override fun onReceivedHttpError(
                     view: WebView?,
-                    request: android.webkit.WebResourceRequest?,
+                    httpReq: android.webkit.WebResourceRequest?,
                     errorResponse: android.webkit.WebResourceResponse?
                 ) {
                     // [Codex 指摘 #1] settled 後の遅延 callback で次 fetch の lastHttpStatus を汚染しないよう先に return
                     if (settled.get()) return
-                    if (request == null || errorResponse == null) return
-                    if (!request.isForMainFrame) return
+                    if (httpReq == null || errorResponse == null) return
+                    if (!httpReq.isForMainFrame) return
                     val statusCode = errorResponse.statusCode
                     lastHttpStatus.set(statusCode)
-                    val reqHost = try { request.url.host?.lowercase() } catch (_: Exception) { null }
+                    val reqHost = try { httpReq.url.host?.lowercase() } catch (_: Exception) { null }
                     val isGoogle = reqHost != null && (
                         reqHost == "google.com" || reqHost.endsWith(".google.com") ||
                         reqHost == "google.co.jp" || reqHost.endsWith(".google.co.jp")
                     )
-                    onLog("HTTP error: status=$statusCode host=$reqHost url=${request.url} (worker=$workerId)")
-                    // [2026-06-27] 1.2.32 相当の挙動に戻すため、ここでは status 記録とログ出力だけにする。
-                    //   Google 403 でも CircuitBreaker.recordFailure / 即 499 経路には倒さない。
-                    //   challenge 検知 (URL ベース) の従来通り isGoogleSearchBlocked + ChallengeActivity 経路に任せる。
-                    if (statusCode == 403 && isGoogle) {
-                        onLog("HTTP 403 noted (no auto-circuit): host=$reqHost url=${request.url} (worker=$workerId)")
+                    onLog("HTTP error: status=$statusCode host=$reqHost url=${httpReq.url} (worker=$workerId)")
+                    if (!isGoogle || extracted) return
+                    when (statusCode) {
+                        // [2026-06-27] HTTP 403 = Google 完全ブロック (reCAPTCHA すら出ない)
+                        //   → 即 CircuitBreaker.recordFailure + extracted/latch.countDown で 499 返却
+                        //   doFetch 末尾の googleOrigin403Detected 経路で circuit_open エラーになる
+                        403 -> {
+                            googleOrigin403Detected.set(true)
+                            extracted = true
+                            reqHost?.let {
+                                GoogleSearchCircuitBreaker.recordFailure(context, it)
+                                val remaining = GoogleSearchCircuitBreaker.remainingTripMs(it)
+                                if (remaining > 0) {
+                                    onLog("circuit tripped (HTTP 403): host=$it trip=${remaining / 1000}s")
+                                } else {
+                                    onLog("HTTP 403 detected: host=$it → 499 即返却 + CircuitBreaker.recordFailure (worker=$workerId)")
+                                }
+                            }
+                            if (challengeShown.get() || alwaysShown.get()) {
+                                mainHandler.post { ChallengeManager.dismiss(wv) }
+                            }
+                            latch.countDown()
+                        }
+                        // [2026-06-27] HTTP 429 = Google レート制限 (sorry リダイレクト)
+                        //   → ChallengeActivity 起動して手動 reCAPTCHA 突破。recordFailure は呼ばない
+                        //   (手動突破で回復可能なので CircuitBreaker trip は過剰)
+                        429 -> {
+                            onLog("HTTP 429 detected: host=$reqHost → ChallengeActivity 起動 (worker=$workerId)")
+                            challengeDetected.set(true)
+                            if (!challengeShown.getAndSet(true)) {
+                                challengeStartMs = System.currentTimeMillis()
+                                mainHandler.post {
+                                    val shown = ChallengeManager.show(context, wv, request.purpose)
+                                    if (!shown) {
+                                        challengeDetected.set(false)
+                                        challengeShown.set(false)
+                                        onLog("HTTP 429 経路: チャレンジ画面起動拒否（自動タップ memory 無し）(worker=$workerId)")
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
