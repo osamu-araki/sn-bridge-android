@@ -29,6 +29,11 @@ object CronetManager {
     var engine: CronetEngine? = null
         private set
 
+    // [2026-06-29] 最後の fetchSync 失敗理由 (UI 表示用)
+    @Volatile
+    var lastFetchError: String? = null
+        private set
+
     /** ChallengeManager.show 等から呼び出される独立ロガー (file log には繋がない) */
     private var onLog: (String) -> Unit = {}
 
@@ -67,7 +72,14 @@ object CronetManager {
         timeoutSeconds: Int = 30,
         headers: Map<String, String> = emptyMap(),
     ): Pair<Int, String>? {
-        val e = engine ?: return null
+        lastFetchError = null
+        val e = engine
+        if (e == null) {
+            val msg = "CronetEngine 未初期化 (null)"
+            lastFetchError = msg
+            onLog("fetchSync: $msg url=$url")
+            return null
+        }
         val body = ByteArrayOutputStream()
         val latch = CountDownLatch(1)
         var statusCode = 0
@@ -108,11 +120,23 @@ object CronetManager {
             req.start()
             if (!latch.await(timeoutSeconds.toLong(), TimeUnit.SECONDS)) {
                 req.cancel()
+                val msg = "timeout (${timeoutSeconds}s)"
+                lastFetchError = msg
+                onLog("fetchSync: $msg url=$url")
                 return null
             }
-            if (error != null) return null
+            if (error != null) {
+                val msg = "${error?.javaClass?.simpleName}: ${error?.message}"
+                lastFetchError = msg
+                onLog("fetchSync: failed url=$url $msg")
+                return null
+            }
+            onLog("fetchSync: ok url=$url status=$statusCode body=${body.size()}B")
             return statusCode to body.toString(Charsets.UTF_8)
         } catch (e: Throwable) {
+            val msg = "${e.javaClass.simpleName}: ${e.message}"
+            lastFetchError = msg
+            onLog("fetchSync: 例外 url=$url $msg")
             return null
         } finally {
             executor.shutdownNow()

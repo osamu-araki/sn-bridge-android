@@ -872,7 +872,8 @@ fun SettingsTab(
                                     headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; SM-S928U) AppleWebKit/537.36 Chrome/123.0.0.0 Mobile Safari/537.36"),
                                 )
                                 fingerprintResult = if (cronet == null) {
-                                    "Cronet fetch 失敗 (engine 初期化失敗 or timeout)"
+                                    val reason = jp.salesnow.chromebridge.fetcher.CronetManager.lastFetchError ?: "原因不明"
+                                    "Cronet fetch 失敗: $reason"
                                 } else {
                                     val (status, body) = cronet
                                     val ja3HashMatch = Regex("\"ja3_hash\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
