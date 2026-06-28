@@ -168,6 +168,15 @@ class SettingsRepository(context: Context) {
         get() = prefs.getLong("min_request_interval_ms", 0L)
         set(value) = prefs.edit { putLong("min_request_interval_ms", value.coerceAtLeast(0L)) }
 
+    // [2026-06-28] UA ローテーション: WebView プール内の WebView ごとに別の User-Agent を使う。
+    //   同一 IP でも UA が異なれば Google から別エンティティとして扱われる効果がある。
+    //   - false (default): defaultUserAgentOverride or WebView 既定 UA (従来挙動)
+    //   - true: WebView スロット index ごとに UA_POOL から固定割り当て
+    //   FetchRequest.userAgent (per-request override) は引き続き最優先。
+    var userAgentRotation: Boolean
+        get() = prefs.getBoolean("ua_rotation", false)
+        set(value) = prefs.edit { putBoolean("ua_rotation", value) }
+
     // [2026-06-25] Challenge 自動タップ記憶。ドメイン → 最後にユーザーがタップした座標 (x, y) を
     //   JSON で保存。次回チャレンジ検知時にその座標で自動タップを試みる。
     //   {"example.com": {"x": 100.5, "y": 200.5, "ts": 1734567890000}, ...}

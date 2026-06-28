@@ -107,6 +107,7 @@ fun SettingsTab(
     val sharedCtx = LocalContext.current
     val sharedRepo = remember { SettingsRepository(sharedCtx) }
     var uaInput by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
+    var uaRotationInput by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var intervalInput by remember { mutableStateOf(sharedRepo.minRequestIntervalMs.toString()) }
     var thresholdInput by remember { mutableStateOf(sharedRepo.circuitFailureThreshold.toString()) }
     var windowInput by remember { mutableStateOf(sharedRepo.circuitWindowMinutes.toString()) }
@@ -116,6 +117,7 @@ fun SettingsTab(
     // [2026-06-27] 各入力の「画面表示時の baseline」を var で持ち、保存後に更新する
     //   (Codex 指摘: val 固定だと保存しても dirty が残る)
     var uaBaseline by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
+    var uaRotationBaseline by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var intervalBaseline by remember { mutableStateOf(sharedRepo.minRequestIntervalMs) }
     var thresholdBaseline by remember { mutableIntStateOf(sharedRepo.circuitFailureThreshold) }
     var windowBaseline by remember { mutableIntStateOf(sharedRepo.circuitWindowMinutes) }
@@ -147,6 +149,7 @@ fun SettingsTab(
     val checkTokenChanged = checkTokenInput.trim() != checkTokenBaseline.trim()
     val autoUpdateChanged = autoUpdateInput != autoUpdateBaseline
     val uaChanged = uaInput.trim() != uaBaseline.trim()
+    val uaRotationChanged = uaRotationInput != uaRotationBaseline
     val intervalChanged = (intervalInput.toLongOrNull() ?: intervalBaseline).coerceAtLeast(0L) != intervalBaseline
     val thresholdChanged = (thresholdInput.toIntOrNull() ?: thresholdBaseline).coerceAtLeast(1) != thresholdBaseline
     val windowChanged = (windowInput.toIntOrNull() ?: windowBaseline).coerceAtLeast(1) != windowBaseline
@@ -156,21 +159,23 @@ fun SettingsTab(
         maxTimeoutChanged || maxWaitChanged ||
         tunnelTokenChanged || tunnelDomainChanged ||
         manifestUrlChanged || checkTokenChanged || autoUpdateChanged ||
-        uaChanged || intervalChanged ||
+        uaChanged || uaRotationChanged || intervalChanged ||
         thresholdChanged || windowChanged || tripChanged
 
     val dirtyCount = listOf(
         portChanged, apiKeyChanged, concurrencyChanged, maxTimeoutChanged, maxWaitChanged,
         tunnelTokenChanged, tunnelDomainChanged,
         manifestUrlChanged, checkTokenChanged, autoUpdateChanged,
-        uaChanged, intervalChanged,
+        uaChanged, uaRotationChanged, intervalChanged,
         thresholdChanged, windowChanged, tripChanged
     ).count { it }
 
-    // 再起動が必要な変更 (Port / API Key / 並列数 / Tunnel Token / Tunnel Domain)
+    // 再起動が必要な変更 (Port / API Key / 並列数 / Tunnel Token / Tunnel Domain / UA rotation)
+    // [2026-06-28] UA rotation の変更は WebView pool の UA 割り当てを再生成する必要があるため再起動必須
     val needsRestart = serverRunning && (
         portChanged || apiKeyChanged || concurrencyChanged ||
-        tunnelTokenChanged || tunnelDomainChanged
+        tunnelTokenChanged || tunnelDomainChanged ||
+        uaRotationChanged
     )
 
     val doSave: () -> Unit = saveAll@{
@@ -217,6 +222,10 @@ fun SettingsTab(
             uaBaseline = sharedRepo.defaultUserAgentOverride
             intervalBaseline = sharedRepo.minRequestIntervalMs
         }
+        if (uaRotationChanged) {
+            sharedRepo.userAgentRotation = uaRotationInput
+            uaRotationBaseline = sharedRepo.userAgentRotation
+        }
         if (thresholdChanged || windowChanged || tripChanged) {
             sharedRepo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: thresholdBaseline
             sharedRepo.circuitWindowMinutes = windowInput.toIntOrNull() ?: windowBaseline
@@ -243,6 +252,7 @@ fun SettingsTab(
         checkTokenInput = checkTokenBaseline
         autoUpdateInput = autoUpdateBaseline
         uaInput = uaBaseline
+        uaRotationInput = uaRotationBaseline
         intervalInput = intervalBaseline.toString()
         thresholdInput = thresholdBaseline.toString()
         windowInput = windowBaseline.toString()
@@ -700,6 +710,8 @@ fun SettingsTab(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = false,
                         minLines = 2,
+                        // [2026-06-28] UA ローテーション ON 時はカスタム UA を編集不可 (排他)
+                        enabled = !uaRotationInput,
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -709,15 +721,36 @@ fun SettingsTab(
                         OutlinedButton(
                             modifier = Modifier.weight(1f),
                             onClick = { uaInput = DESKTOP_CHROME_UA },
+                            enabled = !uaRotationInput,
                         ) {
                             Text("デスクトップ Chrome", fontSize = 12.sp)
                         }
                         OutlinedButton(
                             modifier = Modifier.weight(1f),
                             onClick = { uaInput = "" },
+                            enabled = !uaRotationInput,
                         ) {
                             Text("既定に戻す", fontSize = 12.sp)
                         }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    // [2026-06-28] UA ローテーション (WebView ごとに別 UA を割り当てて bot 検出緩和)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "UA ローテーション",
+                            fontSize = 14.sp,
+                            color = NavyDark,
+                        )
+                        Switch(
+                            checked = uaRotationInput,
+                            onCheckedChange = { uaRotationInput = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Teal)
+                        )
                     }
                     Spacer(Modifier.height(12.dp))
 

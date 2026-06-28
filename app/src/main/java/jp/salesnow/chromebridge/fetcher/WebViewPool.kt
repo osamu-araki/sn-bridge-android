@@ -87,7 +87,8 @@ class WebViewPool(
             val cookieManager = CookieManager.getInstance()
             cookieManager.setAcceptCookie(true)
             for (i in 0 until poolSize) {
-                val wv = createWebView()
+                // [2026-06-28] UA ローテーション ON 時はスロット index で UA を固定 (slot 0..poolSize-1)
+                val wv = createWebView(slotIndex = i)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
                 allInstances.add(wv)
                 available.add(wv)
@@ -103,8 +104,25 @@ class WebViewPool(
         }
     }
 
+    // [2026-06-28] UA ローテーション用の Android Chrome 系 UA プール。
+    //   Codex 指摘: macOS / iPhone UA は Sec-CH-UA-Mobile や WebView fingerprint と不整合
+    //   になるため Phase 1 では Android Chrome 系のみに絞る。
+    //   各 WebView (slot) ごとに UA_POOL[slot % size] を固定割り当て。
+    private val UA_POOL = listOf(
+        "Mozilla/5.0 (Linux; Android 14; SM-S928U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    )
+    // [2026-06-28] 各 WebView の slot index を保持。slot 0..poolSize-1 で固定。
+    //   UA は `UA_POOL[slot % size]` で都度導出 (Codex 指摘: UA 文字列逆算は脆いので slot を直接保存)。
+    //   init / replaceWebView / maybeReplenish で割り当て、destroy / onLowMemory / replaceWebView で remove。
+    private val webViewSlots = java.util.concurrent.ConcurrentHashMap<WebView, Int>()
+
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(): WebView {
+    private fun createWebView(slotIndex: Int = -1): WebView {
         return WebView(context).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -117,6 +135,17 @@ class WebViewPool(
                 .replace("Version/\\d+\\.\\d+".toRegex(), "")
             // [2026-06-20] リクエスト UA 未指定時に毎回戻すための初期値を記録（最初の 1 個で十分、全 WebView 同じ値）
             if (defaultUserAgent.isEmpty()) defaultUserAgent = settings.userAgentString
+            // [2026-06-28] slot index を常に記録 (rotation OFF でも記録、rotation 切替時に
+            //   再起動なしで参照しないので問題なし)
+            if (slotIndex >= 0) {
+                webViewSlots[this] = slotIndex
+                val settingsRepo = jp.salesnow.chromebridge.data.SettingsRepository(context)
+                if (settingsRepo.userAgentRotation) {
+                    val ua = UA_POOL[slotIndex % UA_POOL.size]
+                    settings.userAgentString = ua
+                    onLog("UA rotation: slot=$slotIndex ua=${ua.take(80)}...")
+                }
+            }
         }
     }
 
@@ -606,12 +635,17 @@ class WebViewPool(
             // [2026-06-26] 優先順位: per-request UA > 設定 defaultUserAgentOverride > WebView 既定 UA。
             //   Google 等で `; wv` の付く Android WebView UA が flag されやすいため、設定でデスクトップ
             //   Chrome UA に差し替えてグローバルに適用できるようにする。
+            // [2026-06-28] UA ローテーション ON 時は slot index で固定の UA を使う:
+            //   per-request UA > 設定 defaultUserAgentOverride > rotated UA > WebView 既定 UA
             val requestedUa = request.userAgent?.takeIf { it.isNotBlank() }
             val configuredDefault = try {
                 jp.salesnow.chromebridge.data.SettingsRepository(context)
                     .defaultUserAgentOverride.takeIf { it.isNotBlank() }
             } catch (_: Exception) { null }
-            wv.settings.userAgentString = requestedUa ?: configuredDefault ?: defaultUserAgent
+            val rotatedUa = if (try { jp.salesnow.chromebridge.data.SettingsRepository(context).userAgentRotation } catch (_: Exception) { false }) {
+                webViewSlots[wv]?.let { UA_POOL[it % UA_POOL.size] }
+            } else null
+            wv.settings.userAgentString = requestedUa ?: configuredDefault ?: rotatedUa ?: defaultUserAgent
             // [2026-06-27] displayMode == ALL の場合、challenge 検知を待たずに最初から
             //   ChallengeActivity を表示して WebView を可視化する。
             try {
@@ -762,6 +796,8 @@ class WebViewPool(
         while (available.size > 1) {
             val wv = available.poll() ?: break
             if (semaphore.tryAcquire()) {
+                // [2026-06-28] Codex 指摘: destroyed WebView の slot map をクリアしないとリーク
+                webViewSlots.remove(wv)
                 mainHandler.post {
                     try { wv.stopLoading(); wv.destroy() } catch (_: Exception) {}
                 }
@@ -783,12 +819,15 @@ class WebViewPool(
      * 後続の maybeReplenish が補充する。
      */
     private fun replaceWebView(dead: WebView) {
+        // [2026-06-28] dead WebView の slot index を継承するため、消す前に webViewSlots から取得。
+        val deadSlotIndex = webViewSlots.remove(dead) ?: -1
         mainHandler.post {
             try { dead.stopLoading(); dead.destroy() } catch (_: Exception) {}
             synchronized(allInstances) { allInstances.remove(dead) }
             if (closed) return@post
             try {
-                val fresh = createWebView()
+                // [2026-06-28] UA rotation 有効時は dead の slot index で同じ UA を新規 WebView に割り当てる
+                val fresh = createWebView(slotIndex = deadSlotIndex)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(fresh, true)
                 synchronized(allInstances) { allInstances.add(fresh) }
                 available.add(fresh)
@@ -815,8 +854,11 @@ class WebViewPool(
                 if (closed) return@post
                 var added = 0
                 while (currentSize < poolSize) {
+                    // [2026-06-28] 空き slot を計算 (Codex 指摘: currentSize は onLowMemory 後の歯抜けに対応できない)
+                    val usedSlots = webViewSlots.values.toSet()
+                    val nextSlotIndex = (0 until poolSize).firstOrNull { it !in usedSlots } ?: -1
                     val fresh = try {
-                        createWebView()
+                        createWebView(slotIndex = nextSlotIndex)
                     } catch (e: Exception) {
                         onLog("WebView 補充失敗: ${e.message}")
                         break
@@ -855,6 +897,8 @@ class WebViewPool(
             }
             available.clear()
             deadInstances.clear()
+            // [2026-06-28] Codex 指摘: 完全シャットダウン時に slot map もクリア
+            webViewSlots.clear()
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
