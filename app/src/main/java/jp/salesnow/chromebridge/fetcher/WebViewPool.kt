@@ -870,6 +870,26 @@ class WebViewPool(
                         !headers.keys.any { it.equals("Accept-Language", ignoreCase = true) }) {
                         headers["Accept-Language"] = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
                     }
+                    // [2026-06-29 Phase 2d] SSE / XHR は streaming で取得 (AI Overview / Server-Sent Events 対応)
+                    //   それ以外 (image / css / js / font / html 等) は既存の body 全読み interceptFetch を使う。
+                    //   判定: Accept: text/event-stream を含む or Sec-Fetch-Dest: empty (XHR/fetch)
+                    val acceptHeader = headers.entries.firstOrNull {
+                        it.key.equals("Accept", ignoreCase = true)
+                    }?.value?.lowercase() ?: ""
+                    val secFetchDest = headers.entries.firstOrNull {
+                        it.key.equals("Sec-Fetch-Dest", ignoreCase = true)
+                    }?.value?.lowercase() ?: ""
+                    val useStreaming = acceptHeader.contains("text/event-stream") ||
+                        secFetchDest == "empty"
+                    if (useStreaming) {
+                        // streamingFetch: Cookie redirect 同期は内部で実施済 / 戻り値そのまま返す
+                        return CronetManager.streamingFetch(
+                            url = urlStr,
+                            method = method,
+                            requestHeaders = headers,
+                            headerTimeoutSeconds = 5,
+                        )
+                    }
                     val response = CronetManager.interceptFetch(
                         url = urlStr,
                         method = method,

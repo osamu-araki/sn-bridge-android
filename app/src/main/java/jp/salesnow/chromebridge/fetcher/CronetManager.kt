@@ -176,6 +176,18 @@ object CronetManager {
     //   fixed pool で頭打ちにする (subresource 並列度の上限)
     private val sharedExecutor = Executors.newFixedThreadPool(4)
 
+    // [2026-06-29 Phase 2d] streaming 用は専用 executor (cached pool)。
+    //   理由: SSE / 大きい asset で backpressure block が発生すると sharedExecutor (4 thread)
+    //   が枯渇するため、streaming は別 pool に分離。
+    //   cached pool は idle thread を再利用して churn を抑え、必要時に伸縮する。
+    private val streamingExecutor = Executors.newCachedThreadPool()
+
+    // [2026-06-29 Codex 指摘] cached pool は無制限なので、同時 streaming 数をカウンタで制限する。
+    //   上限超のとき streamingFetch は null fallback (= 既存 interceptFetch / WebView default)。
+    //   WebView が close() し忘れた stream が積み重なって thread が枯渇するリスクを抑える。
+    private val streamingActiveCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private const val STREAMING_MAX_CONCURRENT = 8
+
     // [2026-06-28] Codex 指摘: body 全読みの OOM 防止。subresource は 5MB を超えたら fallback
     private const val MAX_BODY_BYTES = 5 * 1024 * 1024  // 5MB
 
@@ -296,4 +308,212 @@ object CronetManager {
 
     private fun isRestrictedHeader(name: String): Boolean =
         restrictedHeaderNames.contains(name.lowercase())
+
+    // ========== [Phase 2d] streamingFetch ==========
+
+    /**
+     * [Phase 2d] SSE / 大きな asset 向けの streaming fetch。
+     *
+     * Cronet の onReadCompleted から PipedOutputStream に書き、WebView の
+     * WebResourceResponse 側は PipedInputStream を読む。これで body を全部
+     * メモリに溜めずに stream できる (= SSE / AI Overview の XHR / 動画等に対応)。
+     *
+     * Codex 設計レビュー反映:
+     *   - streamingExecutor (cached pool) で sharedExecutor 枯渇を回避
+     *   - CancelableInputStream wrapper で WebView の close 時に req.cancel() を保証
+     *   - headersStarted フラグで onCanceled/onFailed 時の statusCode=0 fallback を厳密に
+     *   - redirect 中の Set-Cookie を URL ごとに即時 CookieManager.setCookie
+     *   - response headers から Set-Cookie / Content-Length / Content-Encoding を除外
+     *   - PipedInputStream buffer 256KB
+     *   - headerLatch 5s (短め、shouldInterceptRequest を詰まらせない)
+     *
+     * 戻り値: WebResourceResponse (PipedInputStream wrapper を含む) または null (fallback)
+     */
+    fun streamingFetch(
+        url: String,
+        method: String,
+        requestHeaders: Map<String, String>,
+        headerTimeoutSeconds: Int = 5,
+    ): android.webkit.WebResourceResponse? {
+        val e = engine ?: return null
+
+        // [Codex 指摘] 同時 streaming 数を上限制御 (cached pool 枯渇防止)
+        val active = streamingActiveCount.get()
+        if (active >= STREAMING_MAX_CONCURRENT) {
+            onLog("streamingFetch: max concurrent ($active/$STREAMING_MAX_CONCURRENT) → fallback url=$url")
+            return null
+        }
+        streamingActiveCount.incrementAndGet()
+        val decrementedAtomic = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun decrementOnce() {
+            if (decrementedAtomic.compareAndSet(false, true)) {
+                streamingActiveCount.decrementAndGet()
+            }
+        }
+
+        val pipeIn = java.io.PipedInputStream(256 * 1024)
+        val pipeOut = java.io.PipedOutputStream(pipeIn)
+        val headerLatch = CountDownLatch(1)
+
+        var statusCode = 0
+        var statusText: String? = null
+        val responseHeaders = mutableMapOf<String, String>()
+        var mimeType: String? = null
+        var encoding: String? = null
+        var headerError: Throwable? = null
+        var headersStarted = false
+        // [Codex 指摘] WebView の close() で確実に UrlRequest.cancel() するため AtomicReference で保持
+        val currentReq = java.util.concurrent.atomic.AtomicReference<UrlRequest?>(null)
+
+        val callback = object : UrlRequest.Callback() {
+            override fun onRedirectReceived(req: UrlRequest, info: UrlResponseInfo, newLocation: String) {
+                // Set-Cookie 同期 (redirect 元 URL)
+                val urlAtRedirect = info.url ?: url
+                info.allHeadersAsList.forEach { entry ->
+                    if (entry.key.equals("Set-Cookie", ignoreCase = true)) {
+                        try {
+                            android.webkit.CookieManager.getInstance().setCookie(urlAtRedirect, entry.value)
+                        } catch (_: Throwable) {}
+                    }
+                }
+                req.followRedirect()
+            }
+            override fun onResponseStarted(req: UrlRequest, info: UrlResponseInfo) {
+                statusCode = info.httpStatusCode
+                statusText = info.httpStatusText.takeIf { it.isNotEmpty() }
+                val finalUrl = info.url ?: url
+                info.allHeadersAsList.forEach { entry ->
+                    val k = entry.key
+                    val v = entry.value
+                    val lower = k.lowercase()
+                    // 最終 URL の Set-Cookie を即時同期
+                    if (lower == "set-cookie") {
+                        try {
+                            android.webkit.CookieManager.getInstance().setCookie(finalUrl, v)
+                        } catch (_: Throwable) {}
+                        return@forEach
+                    }
+                    // WebResourceResponse の headers から除外するもの:
+                    //   - Content-Length / Content-Encoding: Cronet が decode した結果と矛盾するため
+                    //   - Set-Cookie: 上記で同期済
+                    if (lower == "content-length" || lower == "content-encoding") return@forEach
+                    if (!responseHeaders.containsKey(k)) responseHeaders[k] = v
+                }
+                val ct = responseHeaders["Content-Type"] ?: responseHeaders["content-type"]
+                mimeType = ct?.substringBefore(";")?.trim()
+                encoding = ct?.split(";")
+                    ?.firstOrNull { it.trim().startsWith("charset=", ignoreCase = true) }
+                    ?.substringAfter("=")?.trim()
+                headersStarted = true
+                headerLatch.countDown()
+                // body 読み開始 (HEAD / 204 / 205 等は body なし → onSucceeded が即来る)
+                req.read(ByteBuffer.allocateDirect(32 * 1024))
+            }
+            override fun onReadCompleted(req: UrlRequest, info: UrlResponseInfo, byteBuffer: ByteBuffer) {
+                byteBuffer.flip()
+                try {
+                    val bytes = ByteArray(byteBuffer.remaining())
+                    byteBuffer.get(bytes)
+                    pipeOut.write(bytes)
+                } catch (e: IOException) {
+                    // WebView 側が close (read 終了) → pipe broken → request cancel
+                    try { req.cancel() } catch (_: Throwable) {}
+                    return
+                }
+                byteBuffer.clear()
+                req.read(byteBuffer)
+            }
+            override fun onSucceeded(req: UrlRequest, info: UrlResponseInfo) {
+                try { pipeOut.close() } catch (_: Exception) {}
+                decrementOnce()
+            }
+            override fun onFailed(req: UrlRequest, info: UrlResponseInfo?, ex: org.chromium.net.CronetException) {
+                headerError = ex
+                try { pipeOut.close() } catch (_: Exception) {}
+                headerLatch.countDown()
+                decrementOnce()
+            }
+            override fun onCanceled(req: UrlRequest, info: UrlResponseInfo?) {
+                try { pipeOut.close() } catch (_: Exception) {}
+                headerLatch.countDown()
+                decrementOnce()
+            }
+        }
+
+        try {
+            val builder = e.newUrlRequestBuilder(url, callback, streamingExecutor).setHttpMethod(method)
+            requestHeaders.forEach { (k, v) ->
+                if (!isRestrictedHeader(k)) builder.addHeader(k, v)
+            }
+            val req = builder.build()
+            currentReq.set(req)
+            req.start()
+
+            if (!headerLatch.await(headerTimeoutSeconds.toLong(), TimeUnit.SECONDS)) {
+                try { req.cancel() } catch (_: Throwable) {}
+                try { pipeOut.close() } catch (_: Throwable) {}
+                try { pipeIn.close() } catch (_: Throwable) {}
+                onLog("streamingFetch: header timeout (${headerTimeoutSeconds}s) url=$url")
+                return null
+            }
+            if (headerError != null) {
+                try { pipeIn.close() } catch (_: Throwable) {}
+                onLog("streamingFetch: failed url=$url error=${headerError?.javaClass?.simpleName}: ${headerError?.message}")
+                return null
+            }
+            if (!headersStarted) {
+                // onCanceled で latch.countDown された場合
+                try { pipeIn.close() } catch (_: Throwable) {}
+                onLog("streamingFetch: canceled before headers url=$url")
+                return null
+            }
+            if (statusCode in 300..399) {
+                // 3xx は WebResourceResponse 非対応 (通常は Cronet が自動 follow するのでここに来ない)
+                try { req.cancel() } catch (_: Throwable) {}
+                try { pipeIn.close() } catch (_: Throwable) {}
+                return null
+            }
+            val reasonPhrase = statusText ?: defaultReasonPhrase(statusCode)
+            val wrappedStream = CancelableInputStream(pipeIn, currentReq.get(), pipeOut)
+            onLog("streamingFetch: stream start url=$url status=$statusCode mime=$mimeType")
+            return android.webkit.WebResourceResponse(
+                mimeType, encoding, statusCode, reasonPhrase,
+                responseHeaders.toMap(), wrappedStream
+            )
+        } catch (e: Throwable) {
+            try { pipeOut.close() } catch (_: Throwable) {}
+            try { pipeIn.close() } catch (_: Throwable) {}
+            decrementOnce()
+            onLog("streamingFetch: 例外 url=$url error=${e.javaClass.simpleName}: ${e.message}")
+            return null
+        }
+    }
+
+    /** WebView が close() したときに Cronet UrlRequest を確実に cancel する wrapper */
+    private class CancelableInputStream(
+        private val delegate: java.io.PipedInputStream,
+        private val req: UrlRequest?,
+        private val pipeOut: java.io.PipedOutputStream,
+    ) : java.io.FilterInputStream(delegate) {
+        override fun close() {
+            try { req?.cancel() } catch (_: Throwable) {}
+            try { pipeOut.close() } catch (_: Throwable) {}
+            try { delegate.close() } catch (_: Throwable) {}
+        }
+    }
+
+    /** status code に対する標準 reason phrase fallback (空文字を避けるため) */
+    private fun defaultReasonPhrase(statusCode: Int): String = when (statusCode) {
+        200 -> "OK"
+        201 -> "Created"
+        204 -> "No Content"
+        400 -> "Bad Request"
+        401 -> "Unauthorized"
+        403 -> "Forbidden"
+        404 -> "Not Found"
+        429 -> "Too Many Requests"
+        500 -> "Internal Server Error"
+        503 -> "Service Unavailable"
+        else -> "OK"
+    }
 }
