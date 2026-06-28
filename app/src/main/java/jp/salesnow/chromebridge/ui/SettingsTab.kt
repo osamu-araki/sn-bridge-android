@@ -472,7 +472,11 @@ fun SettingsTab(
                         Text("自動チェック（1時間ごと）", fontSize = 14.sp, color = NavyDark)
                         Switch(
                             checked = autoUpdateInput,
-                            onCheckedChange = { autoUpdateInput = it }
+                            onCheckedChange = { autoUpdateInput = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
                         )
                     }
                     Spacer(Modifier.height(8.dp))
@@ -761,7 +765,10 @@ fun SettingsTab(
                         Switch(
                             checked = uaRotationInput,
                             onCheckedChange = { uaRotationInput = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = Teal)
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
                         )
                     }
                     Spacer(Modifier.height(12.dp))
@@ -780,7 +787,10 @@ fun SettingsTab(
                         Switch(
                             checked = cronetInterceptInput,
                             onCheckedChange = { cronetInterceptInput = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = Teal)
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
                         )
                     }
                     Spacer(Modifier.height(8.dp))
