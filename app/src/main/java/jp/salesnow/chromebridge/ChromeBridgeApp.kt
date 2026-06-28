@@ -40,6 +40,17 @@ class ChromeBridgeApp : Application() {
                 exitProcess(10)
             }
         }
+        // [2026-06-28] Cronet (Chromium ネットワークスタック) singleton 初期化
+        //   WebView の HTTP リクエストを intercept して TLS handshake を独自実装するため。
+        //   遅延初期化でも良いが、最初の fetch までに準備しておきたい。
+        try {
+            jp.salesnow.chromebridge.fetcher.CronetManager.setLogger { msg ->
+                android.util.Log.i("CronetManager", msg)
+            }
+            jp.salesnow.chromebridge.fetcher.CronetManager.init(this)
+        } catch (_: Throwable) {
+            // 初期化失敗は無視 (engine = null のまま、intercept は機能しない)
+        }
     }
 
     /**

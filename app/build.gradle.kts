@@ -100,5 +100,10 @@ dependencies {
     // [2026-03-14] SAF DocumentFile（ログバックアップ用）
     implementation("androidx.documentfile:documentfile:1.0.1")
 
+    // [2026-06-28] Cronet（Chromium ネットワークスタック）
+    //   WebView の HTTP リクエストを intercept し、独自の TLS handshake を使うため。
+    //   embedded 版は APK サイズ +約50MB だが Google Play Services 非依存で確実に動作する。
+    implementation("org.chromium.net:cronet-embedded:119.6045.31")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

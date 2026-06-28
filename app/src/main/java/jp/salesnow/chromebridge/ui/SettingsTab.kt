@@ -19,6 +19,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.ui.semantics.Role
 import jp.salesnow.chromebridge.data.SettingsRepository
 import jp.salesnow.chromebridge.fetcher.GoogleSearchCircuitBreaker
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color
@@ -108,6 +111,7 @@ fun SettingsTab(
     val sharedRepo = remember { SettingsRepository(sharedCtx) }
     var uaInput by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationInput by remember { mutableStateOf(sharedRepo.userAgentRotation) }
+    var cronetInterceptInput by remember { mutableStateOf(sharedRepo.cronetIntercept) }
     var intervalInput by remember { mutableStateOf(sharedRepo.minRequestIntervalMs.toString()) }
     var thresholdInput by remember { mutableStateOf(sharedRepo.circuitFailureThreshold.toString()) }
     var windowInput by remember { mutableStateOf(sharedRepo.circuitWindowMinutes.toString()) }
@@ -118,6 +122,7 @@ fun SettingsTab(
     //   (Codex 指摘: val 固定だと保存しても dirty が残る)
     var uaBaseline by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationBaseline by remember { mutableStateOf(sharedRepo.userAgentRotation) }
+    var cronetInterceptBaseline by remember { mutableStateOf(sharedRepo.cronetIntercept) }
     var intervalBaseline by remember { mutableStateOf(sharedRepo.minRequestIntervalMs) }
     var thresholdBaseline by remember { mutableIntStateOf(sharedRepo.circuitFailureThreshold) }
     var windowBaseline by remember { mutableIntStateOf(sharedRepo.circuitWindowMinutes) }
@@ -150,6 +155,7 @@ fun SettingsTab(
     val autoUpdateChanged = autoUpdateInput != autoUpdateBaseline
     val uaChanged = uaInput.trim() != uaBaseline.trim()
     val uaRotationChanged = uaRotationInput != uaRotationBaseline
+    val cronetInterceptChanged = cronetInterceptInput != cronetInterceptBaseline
     val intervalChanged = (intervalInput.toLongOrNull() ?: intervalBaseline).coerceAtLeast(0L) != intervalBaseline
     val thresholdChanged = (thresholdInput.toIntOrNull() ?: thresholdBaseline).coerceAtLeast(1) != thresholdBaseline
     val windowChanged = (windowInput.toIntOrNull() ?: windowBaseline).coerceAtLeast(1) != windowBaseline
@@ -159,19 +165,20 @@ fun SettingsTab(
         maxTimeoutChanged || maxWaitChanged ||
         tunnelTokenChanged || tunnelDomainChanged ||
         manifestUrlChanged || checkTokenChanged || autoUpdateChanged ||
-        uaChanged || uaRotationChanged || intervalChanged ||
+        uaChanged || uaRotationChanged || cronetInterceptChanged || intervalChanged ||
         thresholdChanged || windowChanged || tripChanged
 
     val dirtyCount = listOf(
         portChanged, apiKeyChanged, concurrencyChanged, maxTimeoutChanged, maxWaitChanged,
         tunnelTokenChanged, tunnelDomainChanged,
         manifestUrlChanged, checkTokenChanged, autoUpdateChanged,
-        uaChanged, uaRotationChanged, intervalChanged,
+        uaChanged, uaRotationChanged, cronetInterceptChanged, intervalChanged,
         thresholdChanged, windowChanged, tripChanged
     ).count { it }
 
     // 再起動が必要な変更 (Port / API Key / 並列数 / Tunnel Token / Tunnel Domain / UA rotation)
     // [2026-06-28] UA rotation の変更は WebView pool の UA 割り当てを再生成する必要があるため再起動必須
+    //   Cronet intercept は shouldInterceptRequest 内で都度設定値を読むため再起動不要
     val needsRestart = serverRunning && (
         portChanged || apiKeyChanged || concurrencyChanged ||
         tunnelTokenChanged || tunnelDomainChanged ||
@@ -226,6 +233,10 @@ fun SettingsTab(
             sharedRepo.userAgentRotation = uaRotationInput
             uaRotationBaseline = sharedRepo.userAgentRotation
         }
+        if (cronetInterceptChanged) {
+            sharedRepo.cronetIntercept = cronetInterceptInput
+            cronetInterceptBaseline = sharedRepo.cronetIntercept
+        }
         if (thresholdChanged || windowChanged || tripChanged) {
             sharedRepo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: thresholdBaseline
             sharedRepo.circuitWindowMinutes = windowInput.toIntOrNull() ?: windowBaseline
@@ -253,6 +264,7 @@ fun SettingsTab(
         autoUpdateInput = autoUpdateBaseline
         uaInput = uaBaseline
         uaRotationInput = uaRotationBaseline
+        cronetInterceptInput = cronetInterceptBaseline
         intervalInput = intervalBaseline.toString()
         thresholdInput = thresholdBaseline.toString()
         windowInput = windowBaseline.toString()
@@ -750,6 +762,62 @@ fun SettingsTab(
                             checked = uaRotationInput,
                             onCheckedChange = { uaRotationInput = it },
                             colors = SwitchDefaults.colors(checkedThumbColor = Teal)
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    // [2026-06-28] Cronet TLS intercept (WebView の subresource を Cronet 経由 fetch)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Cronet TLS Fingerprint",
+                            fontSize = 14.sp,
+                            color = NavyDark,
+                        )
+                        Switch(
+                            checked = cronetInterceptInput,
+                            onCheckedChange = { cronetInterceptInput = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Teal)
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // [2026-06-28] TLS Fingerprint 計測ボタン (Phase 2a PoC: tls.peet.ws で JA3/JA4 取得)
+                    val cronetScope = rememberCoroutineScope()
+                    var fingerprintResult by remember { mutableStateOf("") }
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            fingerprintResult = "計測中..."
+                            cronetScope.launch(Dispatchers.IO) {
+                                val cronet = jp.salesnow.chromebridge.fetcher.CronetManager.fetchSync(
+                                    url = "https://tls.peet.ws/api/all",
+                                    timeoutSeconds = 30,
+                                    headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; SM-S928U) AppleWebKit/537.36 Chrome/123.0.0.0 Mobile Safari/537.36"),
+                                )
+                                fingerprintResult = if (cronet == null) {
+                                    "Cronet fetch 失敗 (engine 初期化失敗 or timeout)"
+                                } else {
+                                    val (status, body) = cronet
+                                    val ja3Match = Regex("\"ja3\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                                    val ja3HashMatch = Regex("\"ja3_hash\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                                    val ja4Match = Regex("\"ja4\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                                    "status=$status JA3 hash=${ja3HashMatch?.take(20) ?: "?"} JA4=${ja4Match ?: "?"}"
+                                }
+                            }
+                        },
+                    ) {
+                        Text("TLS Fingerprint 計測 (Cronet)", fontSize = 12.sp)
+                    }
+                    if (fingerprintResult.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            fingerprintResult,
+                            fontSize = 11.sp,
+                            color = NavyDark,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                     Spacer(Modifier.height(12.dp))

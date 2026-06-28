@@ -615,6 +615,52 @@ class WebViewPool(
                     handler?.proceed()
                 }
 
+                // [2026-06-28] Phase 2b: Cronet で subresource (GET/HEAD) を intercept。
+                //   トグル ON 時のみ。Main frame / POST / Range / 非 https は WebView default に戻す。
+                //   Cookie 同期 / redirect は Cronet 内で自動 follow。エラー時は null で WebView fallback。
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    httpReq: android.webkit.WebResourceRequest?
+                ): android.webkit.WebResourceResponse? {
+                    if (httpReq == null) return null
+                    val cronetEnabled = try {
+                        jp.salesnow.chromebridge.data.SettingsRepository(context).cronetIntercept
+                    } catch (_: Exception) { false }
+                    if (!cronetEnabled) return null
+                    // 除外条件: Phase 2b は subresource GET/HEAD のみ。それ以外は WebView default に倒す。
+                    if (httpReq.isForMainFrame) return null
+                    val method = httpReq.method?.uppercase() ?: "GET"
+                    if (method != "GET" && method != "HEAD") return null
+                    val urlStr = httpReq.url?.toString() ?: return null
+                    if (!urlStr.startsWith("https://")) return null
+                    // Range request は Cronet で扱わない (動画 / 部分取得 / 再開系)
+                    if (httpReq.requestHeaders?.keys?.any { it.equals("Range", ignoreCase = true) } == true) return null
+                    // Cookie 注入
+                    val cookieHeader = try {
+                        CookieManager.getInstance().getCookie(urlStr)
+                    } catch (_: Exception) { null }
+                    val headers = httpReq.requestHeaders.toMutableMap()
+                    if (!cookieHeader.isNullOrBlank()) headers["Cookie"] = cookieHeader
+                    val response = CronetManager.interceptFetch(
+                        url = urlStr,
+                        method = method,
+                        requestHeaders = headers,
+                        timeoutSeconds = 10,
+                    ) ?: return null  // 失敗時 (3xx / OOM / timeout 等) は WebView default にフォールバック
+                    // [Codex 指摘] 複数 Set-Cookie をすべて CookieManager に同期
+                    response.setCookies.forEach { sc ->
+                        try { CookieManager.getInstance().setCookie(urlStr, sc) } catch (_: Exception) {}
+                    }
+                    return android.webkit.WebResourceResponse(
+                        response.mimeType,
+                        response.encoding,
+                        response.statusCode,
+                        response.reasonPhrase,
+                        response.headers,
+                        java.io.ByteArrayInputStream(response.body),
+                    )
+                }
+
                 // [2026-05-18] レンダラプロセスの異常終了（OOM/クラッシュ）を検知。
                 // true を返すとアプリ側が WebView の破棄責任を持つ（replaceWebView で実施）。
                 override fun onRenderProcessGone(

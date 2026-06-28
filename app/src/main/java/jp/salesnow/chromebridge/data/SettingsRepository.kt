@@ -177,6 +177,15 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean("ua_rotation", false)
         set(value) = prefs.edit { putBoolean("ua_rotation", value) }
 
+    // [2026-06-28] Cronet TLS intercept: WebView の subresource (GET/HEAD) を Cronet で
+    //   intercept し、独自の TLS handshake (JA3/JA4) を使う。WebView 内蔵 TLS fingerprint と
+    //   異なる値を Google 等に見せることで bot 検出を緩和する効果が期待できる。
+    //   - false (default): WebView 内蔵 fetch (従来挙動)
+    //   - true: subresource GET/HEAD を Cronet 経由で fetch。Main frame / POST / Range / WebSocket は除外。
+    var cronetIntercept: Boolean
+        get() = prefs.getBoolean("cronet_intercept", false)
+        set(value) = prefs.edit { putBoolean("cronet_intercept", value) }
+
     // [2026-06-25] Challenge 自動タップ記憶。ドメイン → 最後にユーザーがタップした座標 (x, y) を
     //   JSON で保存。次回チャレンジ検知時にその座標で自動タップを試みる。
     //   {"example.com": {"x": 100.5, "y": 200.5, "ts": 1734567890000}, ...}
