@@ -41,23 +41,53 @@ object CronetManager {
         onLog = logger
     }
 
+    // [2026-06-29] init 二重実行ガード
+    private val initializing = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
-     * Cronet を初期化する。既に初期化済みなら何もしない。
-     * 失敗時は engine = null のまま。
+     * Cronet を初期化する。Play Services Cronet を async install して、成功時のみ engine を作る。
+     * 既に初期化済み or 初期化中なら何もしない。失敗時は engine = null (WebView default fallback)。
+     *
+     * Codex 設計レビュー反映:
+     *   - GMS install 失敗時に Java fallback で別 TLS fingerprint を出すリスクを回避
+     *   - cronet-fallback は意図的に入れない
+     *   - 失敗時は engine=null のまま (shouldInterceptRequest 等の既存実装が WebView default に倒す)
+     *   - install 中は initializing フラグで二重 install を防ぐ
      */
-    @Synchronized
     fun init(context: Context) {
         if (engine != null) return
+        if (!initializing.compareAndSet(false, true)) return
         try {
-            engine = CronetEngine.Builder(context.applicationContext)
-                .enableQuic(true)
-                .enableHttp2(true)
-                .enableHttpCache(CronetEngine.Builder.HTTP_CACHE_IN_MEMORY, 1024 * 1024)
-                .build()
-            onLog("CronetManager: 初期化成功 version=${engine?.versionString}")
+            com.google.android.gms.net.CronetProviderInstaller
+                .installProvider(context.applicationContext)
+                .addOnCompleteListener { task ->
+                    try {
+                        if (task.isSuccessful) {
+                            try {
+                                engine = CronetEngine.Builder(context.applicationContext)
+                                    .enableQuic(true)
+                                    .enableHttp2(true)
+                                    .enableHttpCache(CronetEngine.Builder.HTTP_CACHE_IN_MEMORY, 1024 * 1024)
+                                    .build()
+                                onLog("CronetManager: GMS Cronet 初期化成功 version=${engine?.versionString}")
+                            } catch (e: Throwable) {
+                                engine = null
+                                onLog("CronetManager: CronetEngine.Builder 失敗: ${e.javaClass.simpleName}: ${e.message}")
+                            }
+                        } else {
+                            engine = null
+                            val errorReason = task.exception?.javaClass?.simpleName ?: "unknown"
+                            val errorMsg = task.exception?.message ?: ""
+                            onLog("CronetManager: GMS Cronet install 失敗 ($errorReason: $errorMsg) → engine=null (WebView default fallback)")
+                        }
+                    } finally {
+                        initializing.set(false)
+                    }
+                }
         } catch (e: Throwable) {
             engine = null
-            onLog("CronetManager: 初期化失敗: ${e.message}")
+            initializing.set(false)
+            onLog("CronetManager: installProvider 呼び出し失敗 ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 

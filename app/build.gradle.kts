@@ -105,10 +105,16 @@ dependencies {
     //   onPageStarted の evaluateJavascript より確実にページ JS より前に実行される。
     implementation("androidx.webkit:webkit:1.12.1")
 
-    // [2026-06-28] Cronet（Chromium ネットワークスタック）
-    //   WebView の HTTP リクエストを intercept し、独自の TLS handshake を使うため。
-    //   embedded 版は APK サイズ +約50MB だが Google Play Services 非依存で確実に動作する。
-    implementation("org.chromium.net:cronet-embedded:119.6045.31")
+    // [2026-06-29] Cronet (Chromium ネットワークスタック) — Play Services 版
+    //   旧 embedded 版 (Cronet 119 固定、+50MB) → Play Services 版 (Chrome WebView と同サイクル更新、薄い)
+    //   理由: WebView 149 と Cronet 119 の JA3 不一致で Google AI Overview が gating されたため、
+    //   バージョン差を縮めて JA3 整合を狙う。
+    //   - cronet-api: Java インターフェースのみ (~52KB)
+    //   - play-services-cronet: 実体は GMS provider が提供 (端末側の Chrome 同期)
+    //   - cronet-fallback は意図的に入れない (JA3 リスク + サイズ増を回避)
+    //     GMS install 失敗時は engine=null で WebView default fallback
+    implementation("org.chromium.net:cronet-api:119.6045.31")
+    implementation("com.google.android.gms:play-services-cronet:18.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
