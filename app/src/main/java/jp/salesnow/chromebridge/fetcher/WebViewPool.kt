@@ -126,6 +126,14 @@ class WebViewPool(
     //   未対応端末 (WebViewFeature.DOCUMENT_START_SCRIPT 不可) では map は使われない。
     private val navigatorOverrideHandlers =
         java.util.concurrent.ConcurrentHashMap<WebView, androidx.webkit.ScriptHandler>()
+
+    // [2026-06-28 緊急修正] 1.2.45 で crash の真因: shouldInterceptRequest 内で
+    //   wv.settings.userAgentString を呼ぶと "WebView method called on thread 'ThreadPoolForeg'"
+    //   例外で process 死亡。shouldInterceptRequest は worker thread で呼ばれるため WebView API
+    //   全般を触れない。doFetch で UA を設定した直後に map に記録しておき、shouldInterceptRequest
+    //   は map から読むことで WebView API 呼び出しを回避する。
+    //   destroy / replaceWebView / onLowMemory で cleanup する (他の map と同じパターン)。
+    private val currentUserAgents = java.util.concurrent.ConcurrentHashMap<WebView, String>()
     // [2026-06-28] navigator override 用 JS (Codex 指摘で minimal 化: languages + language のみ)。
     //   Android Chrome の通常端末挙動に揃える (日本ユーザー想定)。
     //   onPageStarted の evaluateJavascript より確実な addDocumentStartJavaScript で挿入。
@@ -715,10 +723,12 @@ class WebViewPool(
                     // [2026-06-28] navigator 整合 ON + Android Chrome UA のときだけ
                     //   Accept-Language を Cronet subresource にも付与 (main frame と整合)。
                     //   Codex 指摘: UA 判定なしだとデスクトップ UA でも付与してしまう
+                    // [2026-06-28 緊急修正] wv.settings.userAgentString は worker thread から触れない
+                    //   ため、doFetch で記録した currentUserAgents map から読む。
                     val navOverride = try {
                         jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride
                     } catch (_: Exception) { false }
-                    val currentUa = wv.settings.userAgentString ?: ""
+                    val currentUa = currentUserAgents[wv] ?: ""
                     if (navOverride && isAndroidChromeUa(currentUa) &&
                         !headers.keys.any { it.equals("Accept-Language", ignoreCase = true) }) {
                         headers["Accept-Language"] = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -775,6 +785,9 @@ class WebViewPool(
             } else null
             val effectiveUa = requestedUa ?: configuredDefault ?: rotatedUa ?: defaultUserAgent
             wv.settings.userAgentString = effectiveUa
+            // [2026-06-28 緊急修正] shouldInterceptRequest (worker thread) から WebView API を
+            //   触れないため、UA を map に保存する。shouldInterceptRequest 内ではこの map を読む。
+            currentUserAgents[wv] = effectiveUa
             // [2026-06-28] navigator.* 整合: Android Chrome 系 UA のときだけ navigator override を
             //   適用 (デスクトップ UA だと platform 等が不整合)。
             //   addDocumentStartJavaScript で document load 前に inject (Codex 推奨: onPageStarted の
@@ -945,6 +958,7 @@ class WebViewPool(
                 // [2026-06-28] Codex 指摘: destroyed WebView の slot map をクリアしないとリーク
                 webViewSlots.remove(wv)
                 navigatorOverrideHandlers.remove(wv)
+                currentUserAgents.remove(wv)
                 mainHandler.post {
                     try { wv.stopLoading(); wv.destroy() } catch (_: Exception) {}
                 }
@@ -969,6 +983,7 @@ class WebViewPool(
         // [2026-06-28] dead WebView の slot index を継承するため、消す前に webViewSlots から取得。
         val deadSlotIndex = webViewSlots.remove(dead) ?: -1
         navigatorOverrideHandlers.remove(dead)
+        currentUserAgents.remove(dead)
         mainHandler.post {
             try { dead.stopLoading(); dead.destroy() } catch (_: Exception) {}
             synchronized(allInstances) { allInstances.remove(dead) }
@@ -1048,6 +1063,7 @@ class WebViewPool(
             // [2026-06-28] Codex 指摘: 完全シャットダウン時に slot map もクリア
             webViewSlots.clear()
             navigatorOverrideHandlers.clear()
+            currentUserAgents.clear()
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
