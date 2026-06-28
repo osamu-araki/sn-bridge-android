@@ -154,6 +154,143 @@ class WebViewPool(
         return lower.contains("android") && lower.contains("chrome") && lower.contains("mobile")
     }
 
+    /** [Phase 2e] Google 検索 URL か判定 (host = google.com / co.jp、path = /search で始まる) */
+    private fun isGoogleSearchUrl(url: String): Boolean {
+        return try {
+            val u = java.net.URI(url)
+            val host = u.host?.lowercase() ?: return false
+            val path = u.path?.lowercase() ?: return false
+            val isGoogleHost = host == "google.com" || host == "google.co.jp" ||
+                host == "www.google.com" || host == "www.google.co.jp"
+            isGoogleHost && path.startsWith("/search")
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * [2026-06-28 Phase 2e] Google 検索 main frame を Cronet で fetch し
+     * WebView.loadDataWithBaseURL で流し込む。Cronet を background thread で実行し
+     * 完了時に main thread post で loadDataWithBaseURL or fallback loadUrl。
+     *
+     * 制約 (Codex 設計レビュー反映済):
+     * - 対象は Google 検索 GET https のみ (呼び出し側で確認済)
+     * - finalUrl を baseUrl/historyUrl に使う (redirect 後の URL 基準で subresource 解決)
+     * - redirect 中 + 最終の Set-Cookie をすべて CookieManager に同期 + flush()
+     * - 4xx 以上は CircuitBreaker.recordFailure するが HTML があれば表示する
+     * - Cronet 失敗 (null) / 例外時は通常 WebView loadUrl にフォールバック (回帰防止)
+     */
+    private fun runCronetMainFrameFetch(
+        wv: WebView,
+        request: FetchRequest,
+        effectiveUa: String,
+        extraHeaders: Map<String, String>,
+        workerId: Int,
+        settled: AtomicBoolean,
+        lastHttpStatus: java.util.concurrent.atomic.AtomicInteger,
+    ) {
+        Thread {
+            try {
+                if (settled.get()) return@Thread  // [Codex] 外側 timeout 後の遅延実行を無効化
+                val cookieHeader = try {
+                    CookieManager.getInstance().getCookie(request.url)
+                } catch (_: Exception) { null }
+                val headers = mutableMapOf<String, String>()
+                headers["User-Agent"] = effectiveUa
+                extraHeaders.forEach { (k, v) -> headers[k] = v }  // Accept-Language 等
+                if (!cookieHeader.isNullOrBlank()) headers["Cookie"] = cookieHeader
+
+                // [Codex] timeout 予算分配: Cronet fetch は外側 timeout - wait - 2 秒で打ち切る
+                //   (loadDataWithBaseURL → onPageFinished → wait → humanize → extract の時間を残す)
+                //   最低 5s、最大 15s に丸める
+                val cronetTimeout = maxOf(5, minOf(15, request.timeout - request.wait - 2))
+
+                val response = CronetManager.interceptFetch(
+                    url = request.url,
+                    method = "GET",
+                    requestHeaders = headers,
+                    timeoutSeconds = cronetTimeout,
+                )
+                if (settled.get()) return@Thread  // [Codex] Cronet 完了時にも settled 再確認
+                if (response != null) {
+                    // [Codex] Cronet response の status を FetchResult.httpStatus に反映する
+                    //   (loadDataWithBaseURL 経路では WebView の onReceivedHttpError が呼ばれない)
+                    lastHttpStatus.set(response.statusCode)
+                    // Cookie 同期: redirect 中 → 最終 URL の順
+                    response.redirectSetCookies.forEach { (urlAtTime, sc) ->
+                        try { CookieManager.getInstance().setCookie(urlAtTime, sc) } catch (_: Exception) {}
+                    }
+                    response.setCookies.forEach { sc ->
+                        try { CookieManager.getInstance().setCookie(response.finalUrl, sc) } catch (_: Exception) {}
+                    }
+                    try { CookieManager.getInstance().flush() } catch (_: Exception) {}
+
+                    // [Codex] CircuitBreaker.recordFailure は 403 のみ (既存 WebView 経路と整合)。
+                    //   404/500 で trip は過剰、429 は challenge 経路で別途扱う。
+                    if (response.statusCode == 403) {
+                        val host = try { java.net.URI(response.finalUrl).host?.lowercase() } catch (_: Exception) { null }
+                        val isGoogle = host != null && (
+                            host == "google.com" || host.endsWith(".google.com") ||
+                            host == "google.co.jp" || host.endsWith(".google.co.jp")
+                        )
+                        if (isGoogle) {
+                            try {
+                                GoogleSearchCircuitBreaker.recordFailure(context, host!!)
+                                val remaining = GoogleSearchCircuitBreaker.remainingTripMs(host)
+                                if (remaining > 0) {
+                                    onLog("Cronet main frame: circuit tripped (HTTP 403) host=$host trip=${remaining / 1000}s")
+                                } else {
+                                    onLog("Cronet main frame: $host HTTP 403 → recordFailure (worker=$workerId)")
+                                }
+                            } catch (_: Throwable) {}
+                        }
+                    }
+
+                    // HTML を WebView に流し込む (main thread)
+                    val charset = try {
+                        java.nio.charset.Charset.forName(response.encoding ?: "UTF-8")
+                    } catch (_: Exception) { Charsets.UTF_8 }
+                    val htmlBody = try { String(response.body, charset) } catch (_: Exception) {
+                        String(response.body, Charsets.UTF_8)
+                    }
+                    onLog("Cronet main frame fetch: url=${request.url} status=${response.statusCode} body=${response.body.size}B finalUrl=${response.finalUrl} (worker=$workerId)")
+                    mainHandler.post {
+                        if (settled.get()) return@post  // [Codex] post 内でも settled 再確認
+                        try {
+                            wv.loadDataWithBaseURL(
+                                response.finalUrl,
+                                htmlBody,
+                                response.mimeType ?: "text/html",
+                                response.encoding ?: "UTF-8",
+                                response.finalUrl
+                            )
+                        } catch (e: Throwable) {
+                            onLog("Cronet main frame: loadDataWithBaseURL 例外 → fallback: ${e.message}")
+                            try {
+                                if (extraHeaders.isEmpty()) wv.loadUrl(request.url)
+                                else wv.loadUrl(request.url, extraHeaders)
+                            } catch (_: Throwable) {}
+                        }
+                    }
+                } else {
+                    onLog("Cronet main frame fetch 失敗 → WebView loadUrl fallback: url=${request.url} (worker=$workerId)")
+                    mainHandler.post {
+                        if (settled.get()) return@post
+                        if (extraHeaders.isEmpty()) wv.loadUrl(request.url)
+                        else wv.loadUrl(request.url, extraHeaders)
+                    }
+                }
+            } catch (e: Throwable) {
+                onLog("Cronet main frame fetch 例外 → fallback: ${e.message} (worker=$workerId)")
+                mainHandler.post {
+                    if (settled.get()) return@post
+                    try {
+                        if (extraHeaders.isEmpty()) wv.loadUrl(request.url)
+                        else wv.loadUrl(request.url, extraHeaders)
+                    } catch (_: Throwable) {}
+                }
+            }
+        }.start()
+    }
+
     /**
      * [2026-06-28] navigator.* 整合の script handler を同期する。
      *   - 設定 ON + Android Chrome UA + DOCUMENT_START_SCRIPT サポート時のみ登録
@@ -813,7 +950,19 @@ class WebViewPool(
             } catch (_: Exception) { false }) {
                 mapOf("Accept-Language" to "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
             } else emptyMap()
-            if (extraHeaders.isEmpty()) {
+            // [2026-06-28 Phase 2e] Google 検索 main frame を Cronet 経由で fetch する分岐。
+            //   両トグル ON + Google 検索 GET + https + Cronet engine 利用可 のときだけ。
+            //   それ以外は既存の WebView loadUrl 経路に倒す (回帰防止)。
+            val useCronetMainFrame = try {
+                val repo = jp.salesnow.chromebridge.data.SettingsRepository(context)
+                repo.cronetIntercept && repo.cronetMainFrameIntercept
+            } catch (_: Exception) { false }
+                && request.url.startsWith("https://")
+                && isGoogleSearchUrl(request.url)
+                && CronetManager.engine != null
+            if (useCronetMainFrame) {
+                runCronetMainFrameFetch(wv, request, effectiveUa, extraHeaders, workerId, settled, lastHttpStatus)
+            } else if (extraHeaders.isEmpty()) {
                 wv.loadUrl(request.url)
             } else {
                 wv.loadUrl(request.url, extraHeaders)

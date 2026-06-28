@@ -140,6 +140,10 @@ object CronetManager {
         val headers: Map<String, String>,
         val setCookies: List<String>,  // 複数 Set-Cookie をすべて保持
         val body: ByteArray,
+        val finalUrl: String,  // [2026-06-28] redirect 後の最終 URL (Phase 2e で baseUrl に使用)
+        // [2026-06-28 Phase 2e] redirect 中の各 URL に対する Set-Cookie 群。
+        //   呼び出し側で各 URL に対して CookieManager.setCookie を呼ぶことで session 維持。
+        val redirectSetCookies: List<Pair<String, String>>,  // (urlAtTime, setCookieValue)
     )
 
     // [2026-06-28] Codex 指摘: 1 リクエスト 1 executor は thread churn が大きい。
@@ -162,16 +166,26 @@ object CronetManager {
         var statusText = "OK"
         val responseHeaders = mutableMapOf<String, String>()
         val setCookies = mutableListOf<String>()
+        val redirectSetCookies = mutableListOf<Pair<String, String>>()
+        var finalUrl = url  // 初期値、redirect / 最終 response の URL で更新
         var error: Throwable? = null
         var sizeExceeded = false
         try {
             val callback = object : UrlRequest.Callback() {
                 override fun onRedirectReceived(req: UrlRequest, info: UrlResponseInfo, newLocation: String) {
+                    // [2026-06-28 Phase 2e] redirect 中の Set-Cookie を保持 (URL ごと)
+                    val urlAtRedirect = info.url ?: url
+                    info.allHeadersAsList.forEach { entry ->
+                        if (entry.key.equals("Set-Cookie", ignoreCase = true)) {
+                            redirectSetCookies.add(urlAtRedirect to entry.value)
+                        }
+                    }
                     req.followRedirect()
                 }
                 override fun onResponseStarted(req: UrlRequest, info: UrlResponseInfo) {
                     statusCode = info.httpStatusCode
                     statusText = info.httpStatusText.takeIf { it.isNotEmpty() } ?: "OK"
+                    finalUrl = info.url ?: url  // [Phase 2e] 最終 URL を baseUrl 用に保存
                     // [Codex 指摘] 複数 Set-Cookie を含む全 header を取得
                     info.allHeadersAsList.forEach { entry ->
                         val k = entry.key
@@ -223,6 +237,7 @@ object CronetManager {
             if (error != null) throw IOException("Cronet error: ${error?.message}")
             if (sizeExceeded) return null  // OOM 防止のため fallback
             // [Codex 指摘] 3xx は WebResourceResponse 非対応 → fallback (WebView 側で redirect させる)
+            // 注: Cronet 自体は 3xx を自動 follow するので、ここに来るのは「follow 不可な 3xx」のみ
             if (statusCode in 300..399) return null
             val contentType = responseHeaders["Content-Type"] ?: responseHeaders["content-type"]
             val mimeType = contentType?.substringBefore(";")?.trim()
@@ -237,6 +252,8 @@ object CronetManager {
                 headers = responseHeaders.toMap(),
                 setCookies = setCookies.toList(),
                 body = body.toByteArray(),
+                finalUrl = finalUrl,
+                redirectSetCookies = redirectSetCookies.toList(),
             )
         } catch (e: Throwable) {
             return null

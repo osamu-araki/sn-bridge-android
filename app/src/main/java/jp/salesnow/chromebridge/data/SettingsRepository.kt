@@ -186,6 +186,17 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean("cronet_intercept", false)
         set(value) = prefs.edit { putBoolean("cronet_intercept", value) }
 
+    // [2026-06-28] Phase 2e: Google 検索 main frame も Cronet 経由で fetch する。
+    //   cronetIntercept (= subresource Cronet) との併用必須。Google 検索 (www.google.*/search) の
+    //   GET のみ対象。Cronet で main frame HTML を取得し WebView に loadDataWithBaseURL で流す。
+    //   失敗 (timeout / 非HTML / 巨大 body 等) は通常の WebView loadUrl にフォールバック。
+    //   403 等は CircuitBreaker.recordFailure に流す。
+    //   - false (default): 従来通り WebView 内蔵 fetch
+    //   - true (+ cronetIntercept ON): main frame の JA3/JA4 が Cronet 由来に変わる
+    var cronetMainFrameIntercept: Boolean
+        get() = prefs.getBoolean("cronet_main_frame_intercept", false)
+        set(value) = prefs.edit { putBoolean("cronet_main_frame_intercept", value) }
+
     // [2026-06-28] navigator.* 整合: Android Chrome UA 使用時に navigator.languages /
     //   navigator.language を JS から固定値で見せる (ja-JP / ja)。Accept-Language も loadUrl
     //   extraHeaders / Cronet subresource ヘッダーに付与し、Web 標準的な「日本のユーザー」像に揃える。

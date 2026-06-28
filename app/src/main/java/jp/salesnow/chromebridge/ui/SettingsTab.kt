@@ -112,6 +112,7 @@ fun SettingsTab(
     var uaInput by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationInput by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var cronetInterceptInput by remember { mutableStateOf(sharedRepo.cronetIntercept) }
+    var cronetMainFrameInput by remember { mutableStateOf(sharedRepo.cronetMainFrameIntercept) }
     var navigatorOverrideInput by remember { mutableStateOf(sharedRepo.navigatorOverride) }
     var intervalInput by remember { mutableStateOf(sharedRepo.minRequestIntervalMs.toString()) }
     var thresholdInput by remember { mutableStateOf(sharedRepo.circuitFailureThreshold.toString()) }
@@ -124,6 +125,7 @@ fun SettingsTab(
     var uaBaseline by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationBaseline by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var cronetInterceptBaseline by remember { mutableStateOf(sharedRepo.cronetIntercept) }
+    var cronetMainFrameBaseline by remember { mutableStateOf(sharedRepo.cronetMainFrameIntercept) }
     var navigatorOverrideBaseline by remember { mutableStateOf(sharedRepo.navigatorOverride) }
     var intervalBaseline by remember { mutableStateOf(sharedRepo.minRequestIntervalMs) }
     var thresholdBaseline by remember { mutableIntStateOf(sharedRepo.circuitFailureThreshold) }
@@ -158,6 +160,7 @@ fun SettingsTab(
     val uaChanged = uaInput.trim() != uaBaseline.trim()
     val uaRotationChanged = uaRotationInput != uaRotationBaseline
     val cronetInterceptChanged = cronetInterceptInput != cronetInterceptBaseline
+    val cronetMainFrameChanged = cronetMainFrameInput != cronetMainFrameBaseline
     val navigatorOverrideChanged = navigatorOverrideInput != navigatorOverrideBaseline
     val intervalChanged = (intervalInput.toLongOrNull() ?: intervalBaseline).coerceAtLeast(0L) != intervalBaseline
     val thresholdChanged = (thresholdInput.toIntOrNull() ?: thresholdBaseline).coerceAtLeast(1) != thresholdBaseline
@@ -168,14 +171,16 @@ fun SettingsTab(
         maxTimeoutChanged || maxWaitChanged ||
         tunnelTokenChanged || tunnelDomainChanged ||
         manifestUrlChanged || checkTokenChanged || autoUpdateChanged ||
-        uaChanged || uaRotationChanged || cronetInterceptChanged || navigatorOverrideChanged || intervalChanged ||
+        uaChanged || uaRotationChanged || cronetInterceptChanged || cronetMainFrameChanged ||
+        navigatorOverrideChanged || intervalChanged ||
         thresholdChanged || windowChanged || tripChanged
 
     val dirtyCount = listOf(
         portChanged, apiKeyChanged, concurrencyChanged, maxTimeoutChanged, maxWaitChanged,
         tunnelTokenChanged, tunnelDomainChanged,
         manifestUrlChanged, checkTokenChanged, autoUpdateChanged,
-        uaChanged, uaRotationChanged, cronetInterceptChanged, navigatorOverrideChanged, intervalChanged,
+        uaChanged, uaRotationChanged, cronetInterceptChanged, cronetMainFrameChanged,
+        navigatorOverrideChanged, intervalChanged,
         thresholdChanged, windowChanged, tripChanged
     ).count { it }
 
@@ -240,6 +245,10 @@ fun SettingsTab(
             sharedRepo.cronetIntercept = cronetInterceptInput
             cronetInterceptBaseline = sharedRepo.cronetIntercept
         }
+        if (cronetMainFrameChanged) {
+            sharedRepo.cronetMainFrameIntercept = cronetMainFrameInput
+            cronetMainFrameBaseline = sharedRepo.cronetMainFrameIntercept
+        }
         if (navigatorOverrideChanged) {
             sharedRepo.navigatorOverride = navigatorOverrideInput
             navigatorOverrideBaseline = sharedRepo.navigatorOverride
@@ -272,6 +281,7 @@ fun SettingsTab(
         uaInput = uaBaseline
         uaRotationInput = uaRotationBaseline
         cronetInterceptInput = cronetInterceptBaseline
+        cronetMainFrameInput = cronetMainFrameBaseline
         navigatorOverrideInput = navigatorOverrideBaseline
         intervalInput = intervalBaseline.toString()
         thresholdInput = thresholdBaseline.toString()
@@ -795,6 +805,30 @@ fun SettingsTab(
                         Switch(
                             checked = cronetInterceptInput,
                             onCheckedChange = { cronetInterceptInput = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    // [2026-06-28] Phase 2e: Google 検索 main frame も Cronet 経由
+                    //   Cronet TLS Fingerprint との併用必須 (OFF 時は disabled)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Cronet (Main frame も / Google 検索のみ)",
+                            fontSize = 14.sp,
+                            color = NavyDark,
+                        )
+                        Switch(
+                            checked = cronetMainFrameInput,
+                            onCheckedChange = { cronetMainFrameInput = it },
+                            enabled = cronetInterceptInput,  // Cronet TLS OFF 時は disabled
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Teal,
                                 checkedTrackColor = Teal.copy(alpha = 0.3f)
