@@ -132,7 +132,9 @@ object CronetManager {
                 return null
             }
             onLog("fetchSync: ok url=$url status=$statusCode body=${body.size()}B")
-            return statusCode to body.toString(Charsets.UTF_8)
+            // [2026-06-29] Android ART は Java 10+ の ByteArrayOutputStream.toString(Charset) を
+            //   持たないため (NoSuchMethodError 発生)、String(ByteArray, Charset) で decode する
+            return statusCode to String(body.toByteArray(), Charsets.UTF_8)
         } catch (e: Throwable) {
             val msg = "${e.javaClass.simpleName}: ${e.message}"
             lastFetchError = msg
