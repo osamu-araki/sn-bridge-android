@@ -151,33 +151,43 @@ class WebViewPool(
      *   - 設定 ON + Android Chrome UA + DOCUMENT_START_SCRIPT サポート時のみ登録
      *   - それ以外 (設定 OFF / デスクトップ UA / 未対応端末) は既存 handler を解除
      *   - loadUrl の直前で都度呼び出し、状態を一致させる (再起動不要)
+     *
+     * [2026-06-28 緊急修正] WebViewCompat.addDocumentStartJavaScript は UI thread 必須。
+     *   doFetch (worker thread) から直接呼ぶと crash する。mainHandler.post で wrap。
+     *   さらに try-catch で何が起きても process crash しない安全策 + 例外時は
+     *   navigatorOverride を強制 OFF にして再発防止 (起動復旧可能にする)。
      */
     private fun syncNavigatorOverride(wv: WebView, effectiveUa: String) {
         val enabled = try {
             jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride
         } catch (_: Exception) { false }
         val androidChrome = isAndroidChromeUa(effectiveUa)
-        val featureSupported = androidx.webkit.WebViewFeature
-            .isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+        val featureSupported = try {
+            androidx.webkit.WebViewFeature
+                .isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+        } catch (_: Throwable) { false }
         val shouldEnable = enabled && androidChrome && featureSupported
-        val existing = navigatorOverrideHandlers[wv]
-        if (shouldEnable && existing == null) {
+        // [緊急修正] WebViewCompat.addDocumentStartJavaScript は main thread 必須
+        mainHandler.post {
             try {
-                val handler = androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
-                    wv, navigatorOverrideJs, navigatorOverrideOrigins
-                )
-                navigatorOverrideHandlers[wv] = handler
-                onLog("navigator override: 登録 ua=${effectiveUa.take(50)}...")
-            } catch (e: Exception) {
-                onLog("navigator override: 登録失敗 ${e.message}")
-            }
-        } else if (!shouldEnable && existing != null) {
-            try {
-                existing.remove()
-                navigatorOverrideHandlers.remove(wv)
-                onLog("navigator override: 解除")
-            } catch (_: Exception) {
-                navigatorOverrideHandlers.remove(wv)
+                val existing = navigatorOverrideHandlers[wv]
+                if (shouldEnable && existing == null) {
+                    val handler = androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                        wv, navigatorOverrideJs, navigatorOverrideOrigins
+                    )
+                    navigatorOverrideHandlers[wv] = handler
+                    onLog("navigator override: 登録 ua=${effectiveUa.take(50)}...")
+                } else if (!shouldEnable && existing != null) {
+                    try { existing.remove() } catch (_: Exception) {}
+                    navigatorOverrideHandlers.remove(wv)
+                    onLog("navigator override: 解除")
+                }
+            } catch (e: Throwable) {
+                // [緊急修正] 何が起きても process を落とさない + 設定を強制 OFF (再発防止)
+                onLog("navigator override: 致命的エラー → 設定を強制 OFF します: ${e.message}")
+                try {
+                    jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride = false
+                } catch (_: Throwable) {}
             }
         }
     }
