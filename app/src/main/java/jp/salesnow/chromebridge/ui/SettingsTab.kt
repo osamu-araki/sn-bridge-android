@@ -801,10 +801,20 @@ fun SettingsTab(
                                     "Cronet fetch 失敗 (engine 初期化失敗 or timeout)"
                                 } else {
                                     val (status, body) = cronet
-                                    val ja3Match = Regex("\"ja3\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
                                     val ja3HashMatch = Regex("\"ja3_hash\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
                                     val ja4Match = Regex("\"ja4\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-                                    "status=$status JA3 hash=${ja3HashMatch?.take(20) ?: "?"} JA4=${ja4Match ?: "?"}"
+                                    val peetprintHashMatch = Regex("\"peetprint_hash\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                                    val akamaiHashMatch = Regex("\"akamai_fingerprint_hash\":\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                                    buildString {
+                                        appendLine("status=$status")
+                                        appendLine("JA3 hash:")
+                                        appendLine("  ${ja3HashMatch ?: "?"}")
+                                        appendLine("JA4:")
+                                        appendLine("  ${ja4Match ?: "?"}")
+                                        appendLine("peetprint hash:")
+                                        appendLine("  ${peetprintHashMatch ?: "?"}")
+                                        append("akamai (HTTP/2) hash:\n  ${akamaiHashMatch ?: "?"}")
+                                    }
                                 }
                             }
                         },
