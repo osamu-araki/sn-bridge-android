@@ -870,19 +870,37 @@ class WebViewPool(
                         !headers.keys.any { it.equals("Accept-Language", ignoreCase = true) }) {
                         headers["Accept-Language"] = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
                     }
-                    // [2026-06-29 Phase 2d] SSE / XHR は streaming で取得 (AI Overview / Server-Sent Events 対応)
-                    //   それ以外 (image / css / js / font / html 等) は既存の body 全読み interceptFetch を使う。
-                    //   判定: Accept: text/event-stream を含む or Sec-Fetch-Dest: empty (XHR/fetch)
+                    // [2026-06-29 Phase 2d v2] streamingFetch への opt-in を強化:
+                    //   1. Accept: text/event-stream (SSE 確実)
+                    //   2. Sec-Fetch-Dest: empty (XHR/fetch — Chromium 慣習)
+                    //   3. Google 関連 host で「非リソース系」(image/style/script/font/document 以外)
+                    //      → AI Overview の動的 XHR を漏れなく拾うため、Google host は緩く判定
                     val acceptHeader = headers.entries.firstOrNull {
                         it.key.equals("Accept", ignoreCase = true)
                     }?.value?.lowercase() ?: ""
                     val secFetchDest = headers.entries.firstOrNull {
                         it.key.equals("Sec-Fetch-Dest", ignoreCase = true)
                     }?.value?.lowercase() ?: ""
-                    val useStreaming = acceptHeader.contains("text/event-stream") ||
-                        secFetchDest == "empty"
+                    val reqHost = try { httpReq.url?.host?.lowercase() } catch (_: Exception) { null }
+                    val isGoogleHost = reqHost != null && (
+                        reqHost == "google.com" || reqHost.endsWith(".google.com") ||
+                        reqHost == "google.co.jp" || reqHost.endsWith(".google.co.jp") ||
+                        reqHost.endsWith(".gstatic.com") || reqHost.endsWith(".googleapis.com")
+                    )
+                    // 「リソース系」(image/script/style/font/document) は body 全読みで OK
+                    val resourceLikeDest = secFetchDest in setOf("image", "script", "style", "font", "document", "track", "video", "audio")
+                    val useStreaming =
+                        acceptHeader.contains("text/event-stream") ||
+                        secFetchDest == "empty" ||
+                        (isGoogleHost && !resourceLikeDest)
+                    // 詳細ログ ON 時のみ判定経路を出力 (AI Overview 調査用)
+                    val verbose = try {
+                        jp.salesnow.chromebridge.data.SettingsRepository(context).verboseLog
+                    } catch (_: Exception) { false }
+                    if (verbose) {
+                        onLog("intercept: ${if (useStreaming) "STREAM" else "BODY  "} ${reqHost ?: "?"}${try { httpReq.url?.path ?: "" } catch (_: Exception) { "" }} accept=${acceptHeader.take(40)} secFetchDest=$secFetchDest")
+                    }
                     if (useStreaming) {
-                        // streamingFetch: Cookie redirect 同期は内部で実施済 / 戻り値そのまま返す
                         return CronetManager.streamingFetch(
                             url = urlStr,
                             method = method,
