@@ -485,9 +485,13 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("自動チェック（1時間ごと）", fontSize = 14.sp, color = NavyDark)
+                        Text(
+                            "自動チェック（1時間ごと）",
+                            fontSize = 14.sp,
+                            color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
+                        )
                         Switch(
                             checked = autoUpdateInput,
                             onCheckedChange = { autoUpdateInput = it },
@@ -773,12 +777,12 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             "UA ローテーション",
                             fontSize = 14.sp,
                             color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = uaRotationInput,
@@ -789,18 +793,27 @@ fun SettingsTab(
                             )
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
+
+                    // [2026-06-29] Cronet 系のグループヘッダー (TLS + Main frame の親子関係を明示)
+                    Text(
+                        "Cronet TLS",
+                        fontSize = 12.sp,
+                        color = NavyDark.copy(alpha = 0.7f),
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(8.dp))
 
                     // [2026-06-28] Cronet TLS intercept (WebView の subresource を Cronet 経由 fetch)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "Cronet TLS Fingerprint",
+                            "Subresource (画像 / CSS / JS)",
                             fontSize = 14.sp,
                             color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = cronetInterceptInput,
@@ -811,42 +824,42 @@ fun SettingsTab(
                             )
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(8.dp))
 
                     // [2026-06-28] Phase 2e: Google 検索 main frame も Cronet 経由
                     //   Cronet TLS Fingerprint との併用必須 (OFF 時は disabled)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "Cronet (Main frame も / Google 検索のみ)",
+                            "Main frame (Google 検索のみ)",
                             fontSize = 14.sp,
                             color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = cronetMainFrameInput,
                             onCheckedChange = { cronetMainFrameInput = it },
-                            enabled = cronetInterceptInput,  // Cronet TLS OFF 時は disabled
+                            enabled = cronetInterceptInput,  // Subresource OFF 時は disabled
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Teal,
                                 checkedTrackColor = Teal.copy(alpha = 0.3f)
                             )
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     // [2026-06-28] navigator.* 整合 (languages / language を ja-JP に固定 + Accept-Language ヘッダー付与)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             "navigator 整合",
                             fontSize = 14.sp,
                             color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = navigatorOverrideInput,
@@ -1311,12 +1324,12 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             if (verboseLog) "詳細ログモード" else "簡易ログモード",
                             fontSize = 14.sp,
-                            color = NavyDark
+                            color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = verboseLog,
@@ -1354,12 +1367,12 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             "自動バックアップ",
                             fontSize = 14.sp,
-                            color = NavyDark
+                            color = NavyDark,
+                            modifier = Modifier.weight(1f).padding(end = 12.dp),
                         )
                         Switch(
                             checked = logAutoBackup,
