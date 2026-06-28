@@ -112,6 +112,7 @@ fun SettingsTab(
     var uaInput by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationInput by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var cronetInterceptInput by remember { mutableStateOf(sharedRepo.cronetIntercept) }
+    var navigatorOverrideInput by remember { mutableStateOf(sharedRepo.navigatorOverride) }
     var intervalInput by remember { mutableStateOf(sharedRepo.minRequestIntervalMs.toString()) }
     var thresholdInput by remember { mutableStateOf(sharedRepo.circuitFailureThreshold.toString()) }
     var windowInput by remember { mutableStateOf(sharedRepo.circuitWindowMinutes.toString()) }
@@ -123,6 +124,7 @@ fun SettingsTab(
     var uaBaseline by remember { mutableStateOf(sharedRepo.defaultUserAgentOverride) }
     var uaRotationBaseline by remember { mutableStateOf(sharedRepo.userAgentRotation) }
     var cronetInterceptBaseline by remember { mutableStateOf(sharedRepo.cronetIntercept) }
+    var navigatorOverrideBaseline by remember { mutableStateOf(sharedRepo.navigatorOverride) }
     var intervalBaseline by remember { mutableStateOf(sharedRepo.minRequestIntervalMs) }
     var thresholdBaseline by remember { mutableIntStateOf(sharedRepo.circuitFailureThreshold) }
     var windowBaseline by remember { mutableIntStateOf(sharedRepo.circuitWindowMinutes) }
@@ -156,6 +158,7 @@ fun SettingsTab(
     val uaChanged = uaInput.trim() != uaBaseline.trim()
     val uaRotationChanged = uaRotationInput != uaRotationBaseline
     val cronetInterceptChanged = cronetInterceptInput != cronetInterceptBaseline
+    val navigatorOverrideChanged = navigatorOverrideInput != navigatorOverrideBaseline
     val intervalChanged = (intervalInput.toLongOrNull() ?: intervalBaseline).coerceAtLeast(0L) != intervalBaseline
     val thresholdChanged = (thresholdInput.toIntOrNull() ?: thresholdBaseline).coerceAtLeast(1) != thresholdBaseline
     val windowChanged = (windowInput.toIntOrNull() ?: windowBaseline).coerceAtLeast(1) != windowBaseline
@@ -165,14 +168,14 @@ fun SettingsTab(
         maxTimeoutChanged || maxWaitChanged ||
         tunnelTokenChanged || tunnelDomainChanged ||
         manifestUrlChanged || checkTokenChanged || autoUpdateChanged ||
-        uaChanged || uaRotationChanged || cronetInterceptChanged || intervalChanged ||
+        uaChanged || uaRotationChanged || cronetInterceptChanged || navigatorOverrideChanged || intervalChanged ||
         thresholdChanged || windowChanged || tripChanged
 
     val dirtyCount = listOf(
         portChanged, apiKeyChanged, concurrencyChanged, maxTimeoutChanged, maxWaitChanged,
         tunnelTokenChanged, tunnelDomainChanged,
         manifestUrlChanged, checkTokenChanged, autoUpdateChanged,
-        uaChanged, uaRotationChanged, cronetInterceptChanged, intervalChanged,
+        uaChanged, uaRotationChanged, cronetInterceptChanged, navigatorOverrideChanged, intervalChanged,
         thresholdChanged, windowChanged, tripChanged
     ).count { it }
 
@@ -237,6 +240,10 @@ fun SettingsTab(
             sharedRepo.cronetIntercept = cronetInterceptInput
             cronetInterceptBaseline = sharedRepo.cronetIntercept
         }
+        if (navigatorOverrideChanged) {
+            sharedRepo.navigatorOverride = navigatorOverrideInput
+            navigatorOverrideBaseline = sharedRepo.navigatorOverride
+        }
         if (thresholdChanged || windowChanged || tripChanged) {
             sharedRepo.circuitFailureThreshold = thresholdInput.toIntOrNull() ?: thresholdBaseline
             sharedRepo.circuitWindowMinutes = windowInput.toIntOrNull() ?: windowBaseline
@@ -265,6 +272,7 @@ fun SettingsTab(
         uaInput = uaBaseline
         uaRotationInput = uaRotationBaseline
         cronetInterceptInput = cronetInterceptBaseline
+        navigatorOverrideInput = navigatorOverrideBaseline
         intervalInput = intervalBaseline.toString()
         thresholdInput = thresholdBaseline.toString()
         windowInput = windowBaseline.toString()
@@ -787,6 +795,28 @@ fun SettingsTab(
                         Switch(
                             checked = cronetInterceptInput,
                             onCheckedChange = { cronetInterceptInput = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Teal,
+                                checkedTrackColor = Teal.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    // [2026-06-28] navigator.* 整合 (languages / language を ja-JP に固定 + Accept-Language ヘッダー付与)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "navigator 整合",
+                            fontSize = 14.sp,
+                            color = NavyDark,
+                        )
+                        Switch(
+                            checked = navigatorOverrideInput,
+                            onCheckedChange = { navigatorOverrideInput = it },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Teal,
                                 checkedTrackColor = Teal.copy(alpha = 0.3f)

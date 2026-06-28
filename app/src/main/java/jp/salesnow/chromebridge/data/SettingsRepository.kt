@@ -186,6 +186,17 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean("cronet_intercept", false)
         set(value) = prefs.edit { putBoolean("cronet_intercept", value) }
 
+    // [2026-06-28] navigator.* 整合: Android Chrome UA 使用時に navigator.languages /
+    //   navigator.language を JS から固定値で見せる (ja-JP / ja)。Accept-Language も loadUrl
+    //   extraHeaders / Cronet subresource ヘッダーに付与し、Web 標準的な「日本のユーザー」像に揃える。
+    //   - false (default): WebView 既定 (端末 locale 依存)
+    //   - true: navigator.languages = ['ja-JP','ja'], navigator.language = 'ja-JP', Accept-Language を追加
+    //   実装上、UA が Android Chrome 系のときだけ適用 (デスクトップ UA だと不整合 → silent skip)。
+    //   addDocumentStartJavaScript 対応端末のみ有効。未対応なら無効扱い (silent log)。
+    var navigatorOverride: Boolean
+        get() = prefs.getBoolean("navigator_override", false)
+        set(value) = prefs.edit { putBoolean("navigator_override", value) }
+
     // [2026-06-25] Challenge 自動タップ記憶。ドメイン → 最後にユーザーがタップした座標 (x, y) を
     //   JSON で保存。次回チャレンジ検知時にその座標で自動タップを試みる。
     //   {"example.com": {"x": 100.5, "y": 200.5, "ts": 1734567890000}, ...}

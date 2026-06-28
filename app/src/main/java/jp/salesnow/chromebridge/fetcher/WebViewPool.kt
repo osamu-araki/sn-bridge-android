@@ -121,6 +121,67 @@ class WebViewPool(
     //   init / replaceWebView / maybeReplenish で割り当て、destroy / onLowMemory / replaceWebView で remove。
     private val webViewSlots = java.util.concurrent.ConcurrentHashMap<WebView, Int>()
 
+    // [2026-06-28] navigator.* 整合: addDocumentStartJavaScript で登録した ScriptHandler を保持。
+    //   doFetch ごとに ON/OFF / UA を再評価し、必要なら登録 / 解除を切り替える。
+    //   未対応端末 (WebViewFeature.DOCUMENT_START_SCRIPT 不可) では map は使われない。
+    private val navigatorOverrideHandlers =
+        java.util.concurrent.ConcurrentHashMap<WebView, androidx.webkit.ScriptHandler>()
+    // [2026-06-28] navigator override 用 JS (Codex 指摘で minimal 化: languages + language のみ)。
+    //   Android Chrome の通常端末挙動に揃える (日本ユーザー想定)。
+    //   onPageStarted の evaluateJavascript より確実な addDocumentStartJavaScript で挿入。
+    private val navigatorOverrideJs = """
+        (function(){
+          try {
+            Object.defineProperty(navigator, 'languages', {get: () => ['ja-JP','ja']});
+            Object.defineProperty(navigator, 'language', {get: () => 'ja-JP'});
+          } catch(e) {}
+        })();
+    """.trimIndent()
+    // [2026-06-28] addDocumentStartJavaScript の allowed origins (* で全 origin に inject)
+    private val navigatorOverrideOrigins = setOf("*")
+
+    /** Android Chrome 系 UA か簡易判定 (mobile Chrome のみ true。デスクトップ Chrome / Safari / iOS は false) */
+    private fun isAndroidChromeUa(ua: String): Boolean {
+        val lower = ua.lowercase()
+        return lower.contains("android") && lower.contains("chrome") && lower.contains("mobile")
+    }
+
+    /**
+     * [2026-06-28] navigator.* 整合の script handler を同期する。
+     *   - 設定 ON + Android Chrome UA + DOCUMENT_START_SCRIPT サポート時のみ登録
+     *   - それ以外 (設定 OFF / デスクトップ UA / 未対応端末) は既存 handler を解除
+     *   - loadUrl の直前で都度呼び出し、状態を一致させる (再起動不要)
+     */
+    private fun syncNavigatorOverride(wv: WebView, effectiveUa: String) {
+        val enabled = try {
+            jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride
+        } catch (_: Exception) { false }
+        val androidChrome = isAndroidChromeUa(effectiveUa)
+        val featureSupported = androidx.webkit.WebViewFeature
+            .isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
+        val shouldEnable = enabled && androidChrome && featureSupported
+        val existing = navigatorOverrideHandlers[wv]
+        if (shouldEnable && existing == null) {
+            try {
+                val handler = androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                    wv, navigatorOverrideJs, navigatorOverrideOrigins
+                )
+                navigatorOverrideHandlers[wv] = handler
+                onLog("navigator override: 登録 ua=${effectiveUa.take(50)}...")
+            } catch (e: Exception) {
+                onLog("navigator override: 登録失敗 ${e.message}")
+            }
+        } else if (!shouldEnable && existing != null) {
+            try {
+                existing.remove()
+                navigatorOverrideHandlers.remove(wv)
+                onLog("navigator override: 解除")
+            } catch (_: Exception) {
+                navigatorOverrideHandlers.remove(wv)
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(slotIndex: Int = -1): WebView {
         return WebView(context).apply {
@@ -641,6 +702,17 @@ class WebViewPool(
                     } catch (_: Exception) { null }
                     val headers = httpReq.requestHeaders.toMutableMap()
                     if (!cookieHeader.isNullOrBlank()) headers["Cookie"] = cookieHeader
+                    // [2026-06-28] navigator 整合 ON + Android Chrome UA のときだけ
+                    //   Accept-Language を Cronet subresource にも付与 (main frame と整合)。
+                    //   Codex 指摘: UA 判定なしだとデスクトップ UA でも付与してしまう
+                    val navOverride = try {
+                        jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride
+                    } catch (_: Exception) { false }
+                    val currentUa = wv.settings.userAgentString ?: ""
+                    if (navOverride && isAndroidChromeUa(currentUa) &&
+                        !headers.keys.any { it.equals("Accept-Language", ignoreCase = true) }) {
+                        headers["Accept-Language"] = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
+                    }
                     val response = CronetManager.interceptFetch(
                         url = urlStr,
                         method = method,
@@ -691,7 +763,13 @@ class WebViewPool(
             val rotatedUa = if (try { jp.salesnow.chromebridge.data.SettingsRepository(context).userAgentRotation } catch (_: Exception) { false }) {
                 webViewSlots[wv]?.let { UA_POOL[it % UA_POOL.size] }
             } else null
-            wv.settings.userAgentString = requestedUa ?: configuredDefault ?: rotatedUa ?: defaultUserAgent
+            val effectiveUa = requestedUa ?: configuredDefault ?: rotatedUa ?: defaultUserAgent
+            wv.settings.userAgentString = effectiveUa
+            // [2026-06-28] navigator.* 整合: Android Chrome 系 UA のときだけ navigator override を
+            //   適用 (デスクトップ UA だと platform 等が不整合)。
+            //   addDocumentStartJavaScript で document load 前に inject (Codex 推奨: onPageStarted の
+            //   evaluateJavascript より確実)。トグル ON/OFF / UA 切替に応じて script handler を同期。
+            syncNavigatorOverride(wv, effectiveUa)
             // [2026-06-27] displayMode == ALL の場合、challenge 検知を待たずに最初から
             //   ChallengeActivity を表示して WebView を可視化する。
             try {
@@ -704,7 +782,19 @@ class WebViewPool(
             } catch (_: Exception) {
                 // 設定読み込み失敗時は alwaysShow を諦めて通常 fetch を続行
             }
-            wv.loadUrl(request.url)
+            // [2026-06-28] navigator.* 整合 ON 時は Accept-Language ヘッダーも main frame に付与
+            //   (subresource は WebView default fetch or Cronet 経由で別途付与)
+            val extraHeaders = if (try {
+                jp.salesnow.chromebridge.data.SettingsRepository(context).navigatorOverride &&
+                    isAndroidChromeUa(effectiveUa)
+            } catch (_: Exception) { false }) {
+                mapOf("Accept-Language" to "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
+            } else emptyMap()
+            if (extraHeaders.isEmpty()) {
+                wv.loadUrl(request.url)
+            } else {
+                wv.loadUrl(request.url, extraHeaders)
+            }
         }
 
         // [2026-03-13] 通常タイムアウトで待機
@@ -844,6 +934,7 @@ class WebViewPool(
             if (semaphore.tryAcquire()) {
                 // [2026-06-28] Codex 指摘: destroyed WebView の slot map をクリアしないとリーク
                 webViewSlots.remove(wv)
+                navigatorOverrideHandlers.remove(wv)
                 mainHandler.post {
                     try { wv.stopLoading(); wv.destroy() } catch (_: Exception) {}
                 }
@@ -867,6 +958,7 @@ class WebViewPool(
     private fun replaceWebView(dead: WebView) {
         // [2026-06-28] dead WebView の slot index を継承するため、消す前に webViewSlots から取得。
         val deadSlotIndex = webViewSlots.remove(dead) ?: -1
+        navigatorOverrideHandlers.remove(dead)
         mainHandler.post {
             try { dead.stopLoading(); dead.destroy() } catch (_: Exception) {}
             synchronized(allInstances) { allInstances.remove(dead) }
@@ -945,6 +1037,7 @@ class WebViewPool(
             deadInstances.clear()
             // [2026-06-28] Codex 指摘: 完全シャットダウン時に slot map もクリア
             webViewSlots.clear()
+            navigatorOverrideHandlers.clear()
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
