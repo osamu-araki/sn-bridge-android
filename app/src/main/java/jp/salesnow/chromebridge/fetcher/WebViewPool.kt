@@ -64,6 +64,13 @@ class WebViewPool(
     //   前回 override の影響が残らない。
     @Volatile private var defaultUserAgent: String = ""
 
+    // [2026-06-29] AI モード (udm=50) 待機ゲート用パラメータ。AI 回答描画を待つ。
+    //   本文 (innerText) がこの長さ以下なら「まだ AI 回答が生成中」とみなす。
+    private val AI_MODE_MIN_BODY_LEN = 200
+    //   再判定の最大回数 × 間隔 = 最大待機時間 (6 × 2500ms = 15s)。fetch の timeout が全体上限。
+    private val MAX_AI_MODE_REDETECTS = 6
+    private val AI_MODE_REDETECT_INTERVAL_MS = 2500L
+
     // [2026-06-26] 同一ホストへの最小リクエスト間隔 throttle 用。
     //   nextAllowedAtByHost[host] = 「次に fetch を開始してよい時刻 (ms)」
     //   並列で来ても synchronized(throttleLock) 内で順序付けされ、
@@ -528,6 +535,10 @@ class WebViewPool(
         //   ケース (本文 bodyLen <= 200) は SPA レンダリング待ちのため 3s 後に再 detect する。
         //   一度しか scheduled しないようフラグを保持。
         val googleSerpRedetectScheduled = AtomicBoolean(false)
+        // [2026-06-29] AI モード (udm=50) は AI 回答描画が遅く本文が育つまで時間がかかる。
+        //   bodyLen<=200 でも challenge 化せず、最大 MAX_AI_MODE_REDETECTS 回まで再判定して待つ。
+        //   fetch 単位で初期化 (WebView 再利用時に状態が残らないよう doFetch スコープに置く)。
+        val aiModeRedetectCount = java.util.concurrent.atomic.AtomicInteger(0)
         // [2026-06-27] Google origin 403 を本文ベースで検知したら true。
         //   challenge 経路にも入っている可能性があるので、最終 return 直前に 499 へ倒す。
         val googleOrigin403Detected = AtomicBoolean(false)
@@ -632,6 +643,30 @@ class WebViewPool(
                                     }
                                 }
                                 latch.countDown()
+                                return@evaluateJavascript
+                            }
+                        }
+
+                        // [2026-06-29] AI モード (udm=50) 待機ゲート。
+                        //   Codex 指摘: 強い challenge シグナル (recaptcha / sorry / challenge title) を
+                        //   先に通し、それらが無い「AI 回答が未生成なだけ」のケースだけ待機する。
+                        //   これらの強いシグナルは下の isChallenge で即 challenge 経路に入る。
+                        if (parsedOk) {
+                            val lowerPageUrl = pageUrl.lowercase()
+                            val strongChallenge = ChallengeManager.isChallengeTitle(title) ||
+                                lowerPageUrl.contains("google.com/sorry") ||
+                                lowerPageUrl.contains("google.co.jp/sorry") ||
+                                hasRecaptcha ||
+                                // [Codex] HTTP 429 / 既に challenge 検知済みなら AI 待機で握り潰さず即 challenge へ
+                                challengeDetected.get() ||
+                                lastHttpStatus.get() == 429
+                            if (!strongChallenge &&
+                                ChallengeManager.isAiModeSearch(pageUrl) &&
+                                bodyLen in 0..AI_MODE_MIN_BODY_LEN &&
+                                aiModeRedetectCount.getAndIncrement() < MAX_AI_MODE_REDETECTS
+                            ) {
+                                onLog("AI モード (udm=50) 本文未生成 bodyLen=$bodyLen → ${AI_MODE_REDETECT_INTERVAL_MS}ms 後再判定 (試行 ${aiModeRedetectCount.get()}/$MAX_AI_MODE_REDETECTS, worker=$workerId)")
+                                mainHandler.postDelayed({ runDetect() }, AI_MODE_REDETECT_INTERVAL_MS)
                                 return@evaluateJavascript
                             }
                         }
