@@ -216,6 +216,10 @@ object ChallengeManager {
     /** WebViewPool が CircuitBreaker 連携で利用するため public 化。 */
     fun isGoogleSearchBlocked(url: String, visibleBodyLen: Int): Boolean {
         if (visibleBodyLen !in 0..GOOGLE_SEARCH_MIN_BODY_LEN) return false
+        // [2026-06-29] Google AI モード (udm=50) は AI 回答が JS で逐次描画されるため、生成中は
+        //   本文 (innerText) が短い。これを bodyLen だけで「blocked SERP」と誤検知しないよう除外する。
+        //   本物のブロックは /sorry リダイレクト・challenge タイトル・origin 403 本文で別途検知される。
+        if (isAiModeSearch(url)) return false
         val (host, path) = try {
             val u = java.net.URI(url)
             (u.host?.lowercase() to u.path?.lowercase())
@@ -226,6 +230,20 @@ object ChallengeManager {
         //   path == "/search" 厳密一致のみ。SERP のサブパスでブロックされる観測が出てきたら拡張する。
         return path == "/search"
     }
+
+    /**
+     * [2026-06-29] Google AI モード検索か (クエリ `udm=50`)。
+     *   AI モードは AI 回答を逐次描画するため本文生成が遅く、bodyLen ベースの blocked 判定で
+     *   誤検知しやすい。文字列 contains でなく URL クエリを正しく parse して `udm==50` を判定する。
+     */
+    fun isAiModeSearch(url: String): Boolean = try {
+        val query = java.net.URI(url).rawQuery ?: ""
+        query.split("&").any {
+            val k = it.substringBefore("=")
+            val v = it.substringAfter("=", "")
+            k == "udm" && v == "50"
+        }
+    } catch (_: Exception) { false }
 
     /** reCAPTCHA iframe 単独判定の本文長閾値。これ以下なら「reCAPTCHA だけのページ」と判断 */
     private const val RECAPTCHA_BODY_LEN_THRESHOLD = 200
