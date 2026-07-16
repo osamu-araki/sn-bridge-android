@@ -1,4 +1,8 @@
-// Version: 1.2.0 | Updated: 2026-07-16
+// Version: 1.3.0 | Updated: 2026-07-16
+// [2026-07-16] parser 不一致 false-positive を修正。scheme/host 抽出を WebView と同じ寛容パーサ
+//   android.net.Uri に統一し、host 検査は UrlPolicy.checkHost() を直接呼ぶ（厳格 URL パースを迂回）。
+//   実機で www.google.com のサブリソース（特殊文字含む URL）が java.net.URI 例外→fail-closed 遮断
+//   されていた問題を解消。遮断判定の対象（private/reserved IP・非http(s)スキーム）は不変。
 // [2026-07-16] レンダリング中の全リクエストに SSRF ガードを適用（サブリクエスト遮断）。
 //   UrlPolicy.check() を host 単位で短 TTL キャッシュするラッパー。
 // [2026-07-16] Codex 事後レビュー反映:
@@ -13,7 +17,6 @@ package jp.salesnow.chromebridge.fetcher
 
 import jp.salesnow.chromebridge.server.UrlPolicy
 import java.net.IDN
-import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -45,20 +48,25 @@ object SsrfGuard {
 
     private fun classify(rawUrl: String?): Cls {
         if (rawUrl.isNullOrBlank()) return Cls.Allow
-        val uri = try { URI(rawUrl) } catch (_: Exception) { return Cls.Block("URL 解析失敗") } // 壊れた URL は遮断
-        when (uri.scheme?.lowercase()) {
+        // [2026-07-16] WebView と同じ寛容パーサ(android.net.Uri)で scheme/host を抽出する。
+        //   java.net.URI は RFC 厳格で `|{}^` 等の未エンコード特殊文字を含む正当な公開 URL
+        //   （Google SERP の gen_204/telemetry/広告系サブリソース）で例外を投げ、fail-closed 遮断していた。
+        //   android.net.Uri は例外を投げず、WebView が実際に接続する host と一致するため、
+        //   parser 不一致による false-block も bypass も生じない。
+        val uri = android.net.Uri.parse(rawUrl)
+        val scheme = uri.scheme?.lowercase()
+        when (scheme) {
             "http", "https" -> { /* 下で host 検査 */ }
             // インライン・非ネットワークは安全（レンダリングに必須なので通す）
             "data", "blob", "about", "javascript" -> return Cls.Allow
             // ローカルファイル読取・その他不明スキームは遮断
-            "file", "content", "ftp", "ws", "wss" -> return Cls.Block("非http(s)スキーム遮断: ${uri.scheme}")
+            "file", "content", "ftp", "ws", "wss" -> return Cls.Block("非http(s)スキーム遮断: $scheme")
             null, "" -> {
                 // 純粋な相対参照/インライン（host 無し）は許可。
-                // network-path reference（//host/... で host あり）は host を検査させる
-                //   （UrlPolicy は非 http scheme を Deny するため実質遮断側に倒れる）。
+                // network-path reference（//host/... で host あり）は host を検査させる。
                 if (uri.host == null) return Cls.Allow
             }
-            else -> return Cls.Block("未知スキーム遮断: ${uri.scheme}")
+            else -> return Cls.Block("未知スキーム遮断: $scheme")
         }
         val rawHost = uri.host ?: return Cls.Block("host 無し")
         // UrlPolicy.check() 内の IDN 正規化とキャッシュキーを揃える（重複エントリ防止）。
@@ -79,7 +87,8 @@ object SsrfGuard {
             is Cls.Check -> {
                 val cached = cache[c.host]
                 if (cached != null && cached.expiresAt > nowMs) return Result(cached.blocked, cached.reason)
-                val decision = UrlPolicy.check(rawUrl)
+                // 抽出済み host を直接検査（UrlPolicy.check の厳格 URL パースを迂回）。
+                val decision = UrlPolicy.checkHost(c.host)
                 val blocked = decision is UrlPolicy.Decision.Deny
                 val reason = (decision as? UrlPolicy.Decision.Deny)?.reason
                 if (cache.size >= MAX_ENTRIES) evict(nowMs)

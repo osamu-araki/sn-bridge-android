@@ -1,4 +1,6 @@
-// Version: 2.1.0 | Updated: 2026-06-10
+// Version: 2.2.0 | Updated: 2026-07-16
+// [2026-07-16] host 単位の検査入口 checkHost() を追加（check() の scheme 検査後ロジックを共有・挙動不変）。
+//   SsrfGuard の parser 不一致 false-positive（java.net.URI 厳格パースで正当な公開 URL を誤遮断）対策。
 // [2026-06-10] Codex#2: /fetch の URL allow/deny policy。SSRF 対策。
 // [2026-06-10] Codex 再レビュー: integer/hex/octal IPv4 表記の正規化、
 //   および DNS 解決後の各 IP に対するプライベート判定を追加。
@@ -44,7 +46,19 @@ object UrlPolicy {
         }
 
         val rawHost = uri.host ?: return Decision.Deny("host が指定されていません")
+        return checkHost(rawHost)
+    }
 
+    /**
+     * host（scheme 抽出済み・非 null）を private/loopback/DNS 観点で検査する。
+     * check() の scheme 検査後のロジックをそのまま共有する（check() の挙動は不変）。
+     * [2026-07-16] SsrfGuard が寛容パーサ(android.net.Uri)で抽出した host を直接検査するために公開。
+     *   java.net.URI の厳格パースだと、正当な公開 URL（`|{}^` 等の未エンコード特殊文字を含む
+     *   Google SERP のサブリソース: gen_204 / telemetry / 広告系）が URISyntaxException → fail-closed で
+     *   誤遮断される parser 不一致 false-positive が起きるため、host 単位検査の入口を分離した。
+     * **DNS 解決を伴うためブロッキング**。HTTP ハンドラ / worker thread で呼ぶ前提。
+     */
+    fun checkHost(rawHost: String): Decision {
         // IDN を ASCII に正規化
         val asciiHost = try {
             IDN.toASCII(rawHost).lowercase()
