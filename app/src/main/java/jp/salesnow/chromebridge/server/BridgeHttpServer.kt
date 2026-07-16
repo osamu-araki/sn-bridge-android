@@ -213,10 +213,10 @@ class BridgeHttpServer(
             )
         }
 
-        if (mode != null && mode != "text" && mode != "dom") {
+        if (mode != null && mode != "text" && mode != "dom" && mode != "html") {
             return errorResponse(
                 Status.BAD_REQUEST, "bad_request",
-                "mode は \"text\" または \"dom\" を指定してください",
+                "mode は \"text\" / \"dom\" / \"html\" を指定してください",
                 retryable = false, category = "client"
             )
         }
@@ -328,6 +328,11 @@ class BridgeHttpServer(
                 )
                 if (fetchMode == "dom" && fetchResult.dom != null) {
                     resp["dom"] = JsonParser.parseString(fetchResult.dom)
+                }
+                // [2026-06-30] mode="html": 生 HTML と iframe src 一覧を追加 (gson が List<String> を配列化)。
+                if (fetchMode == "html") {
+                    if (fetchResult.html != null) resp["html"] = fetchResult.html
+                    if (fetchResult.iframes != null) resp["iframes"] = fetchResult.iframes
                 }
                 // [2026-03-11] クランプ情報をレスポンスに含める
                 if (timeoutClamped || waitClamped) {

@@ -108,4 +108,41 @@ object JsExtractors {
             });
         })();
     """.trimIndent()
+
+    /**
+     * [2026-06-30] HTML モード: レンダリング後の生 HTML (documentElement.outerHTML) と
+     *   ページ内 iframe の src 一覧を返す。フォーム検出はポータル側 (detectFormFields) が担当し、
+     *   Bridge は生 HTML を返すだけに徹する。
+     *
+     *   text はあえて空にする (html に全部入るため二重送出しない)。
+     *   iframe.src は getAttribute('src') で属性値を取得 (クロスオリジンでも属性は読める。
+     *   相対 URL のまま返るので、Phase 2 で再 fetch する場合はポータル側で base URL 解決する)。
+     *
+     *   [Codex 事前レビュー反映] 巨大ページ (数MB) を全長で JS→Kotlin 転送 / Gson parse すると
+     *   parse 失敗・メモリ圧迫リスクがあるため、outerHTML を JS 側で maxLength に切り詰めてから返す。
+     *   これで JS→Kotlin 転送量と Kotlin 側 parse 対象を maxLength に上限化する。
+     *
+     * @param maxLength html の最大文字数。これを超える分は末尾切り詰め (タグ途中で切れてよい)。
+     */
+    fun extractHtml(maxLength: Int): String = """
+        (function() {
+            var html = '';
+            try { html = document.documentElement ? document.documentElement.outerHTML : ''; } catch (e) {}
+            if (html.length > $maxLength) html = html.slice(0, $maxLength);
+            var iframes = [];
+            try {
+                document.querySelectorAll('iframe[src]').forEach(function(f) {
+                    var s = f.getAttribute('src') || '';
+                    if (s && iframes.indexOf(s) === -1) iframes.push(s);
+                });
+            } catch (e) {}
+            return JSON.stringify({
+                text: '',
+                title: document.title || '',
+                url: location.href,
+                html: html,
+                iframes: iframes.slice(0, 20)
+            });
+        })();
+    """.trimIndent()
 }

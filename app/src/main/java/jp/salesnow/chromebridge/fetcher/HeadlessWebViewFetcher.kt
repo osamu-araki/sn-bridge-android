@@ -33,6 +33,10 @@ data class FetchResult(
     val finalUrl: String = "",
     val mode: String = "text",
     val dom: String? = null,
+    // [2026-06-30] mode="html" のときの生 HTML (outerHTML) と iframe src 一覧。default null なので
+    //   既存生成箇所 (text/dom) は無影響。実行時は WebViewPool が生成する (本 deprecated fetch は非対象)。
+    val html: String? = null,
+    val iframes: List<String>? = null,
     val error: String? = null,
     val message: String? = null,
     // [2026-06-27] WebView の onReceivedHttpError で捕捉した HTTP status code。

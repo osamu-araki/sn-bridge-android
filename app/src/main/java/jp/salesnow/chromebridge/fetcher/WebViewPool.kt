@@ -762,8 +762,11 @@ class WebViewPool(
                                     // humanize 完了後 700ms 待って extract (smooth scroll の完了待ち)
                                     mainHandler.postDelayed({
                                         if (settled.get()) return@postDelayed
-                                        val js = if (request.mode == "dom") JsExtractors.EXTRACT_DOM
-                                                 else JsExtractors.EXTRACT_TEXT
+                                        val js = when (request.mode) {
+                                            "dom"  -> JsExtractors.EXTRACT_DOM
+                                            "html" -> JsExtractors.extractHtml(request.maxLength)
+                                            else   -> JsExtractors.EXTRACT_TEXT
+                                        }
                                         wv.evaluateJavascript(js) { result ->
                                             if (settled.get()) return@evaluateJavascript
                                             jsResult = result
@@ -1155,9 +1158,21 @@ class WebViewPool(
                 json.getAsJsonObject("dom").toString()
             } else null
 
+            // [2026-06-30] mode="html": 生 HTML と iframe src 一覧。html は JS 側で maxLength 切り詰め済だが
+            //   念のため Kotlin 側でも防御的に切り詰める。iframes は成功時は空でも配列 ([]) を返す。
+            val htmlStr = if (request.mode == "html" && json.has("html")) {
+                var h = json.get("html").asString
+                if (h.length > request.maxLength) h = h.substring(0, request.maxLength)
+                h
+            } else null
+            val iframeList = if (request.mode == "html" && json.has("iframes")) {
+                json.getAsJsonArray("iframes").mapNotNull { runCatching { it.asString }.getOrNull() }
+            } else null
+
             return FetchResult(
                 ok = true, text = text, title = title,
-                finalUrl = finalUrl, mode = request.mode, dom = domJson
+                finalUrl = finalUrl, mode = request.mode, dom = domJson,
+                html = htmlStr, iframes = iframeList
             )
         } catch (e: Exception) {
             return FetchResult(
