@@ -114,10 +114,16 @@ object CronetManager {
         val latch = CountDownLatch(1)
         var statusCode = 0
         var error: Throwable? = null
+        var ssrfBlocked = false
         val executor = Executors.newSingleThreadExecutor()
         try {
             val callback = object : UrlRequest.Callback() {
                 override fun onRedirectReceived(req: UrlRequest, info: UrlResponseInfo, newLocation: String) {
+                    // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
+                    if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
+                        onLog("blocked(ssrf-redirect): $newLocation")
+                        ssrfBlocked = true; req.cancel(); return
+                    }
                     req.followRedirect()
                 }
                 override fun onResponseStarted(req: UrlRequest, info: UrlResponseInfo) {
@@ -161,6 +167,8 @@ object CronetManager {
                 onLog("fetchSync: failed url=$url $msg")
                 return null
             }
+            // [2026-07-16 SSRF] リダイレクト先遮断でキャンセルした場合は成功扱いにしない。
+            if (ssrfBlocked) { lastFetchError = "blocked(ssrf-redirect)"; return null }
             onLog("fetchSync: ok url=$url status=$statusCode body=${body.size()}B")
             // [2026-06-29] Android ART は Java 10+ の ByteArrayOutputStream.toString(Charset) を
             //   持たないため (NoSuchMethodError 発生)、String(ByteArray, Charset) で decode する
@@ -237,6 +245,7 @@ object CronetManager {
         val redirectSetCookies = mutableListOf<Pair<String, String>>()
         var finalUrl = url  // 初期値、redirect / 最終 response の URL で更新
         var error: Throwable? = null
+        var ssrfBlocked = false
         var sizeExceeded = false
         try {
             val callback = object : UrlRequest.Callback() {
@@ -247,6 +256,11 @@ object CronetManager {
                         if (entry.key.equals("Set-Cookie", ignoreCase = true)) {
                             redirectSetCookies.add(urlAtRedirect to entry.value)
                         }
+                    }
+                    // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
+                    if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
+                        onLog("blocked(ssrf-redirect): $newLocation")
+                        ssrfBlocked = true; req.cancel(); return
                     }
                     req.followRedirect()
                 }
@@ -303,6 +317,20 @@ object CronetManager {
                 throw IOException("Cronet timeout (${timeoutSeconds}s) for $url")
             }
             if (error != null) throw IOException("Cronet error: ${error?.message}")
+            // [2026-07-16 SSRF] リダイレクト先遮断でキャンセルした場合は、statusCode=0 応答や
+            //   null（＝WebView default fallback で再フェッチ）に倒さず、403 空応答を確定で返す。
+            //   これで redirect target が WebView 側で再実行される余地を残さない。
+            if (ssrfBlocked) return InterceptResponse(
+                statusCode = 403,
+                reasonPhrase = "Forbidden",
+                mimeType = "text/plain",
+                encoding = "utf-8",
+                headers = emptyMap(),
+                setCookies = emptyList(),
+                body = ByteArray(0),
+                finalUrl = url,
+                redirectSetCookies = emptyList(),
+            )
             if (sizeExceeded) return null  // OOM 防止のため fallback
             // [Codex 指摘] 3xx は WebResourceResponse 非対応 → fallback (WebView 側で redirect させる)
             // 注: Cronet 自体は 3xx を自動 follow するので、ここに来るのは「follow 不可な 3xx」のみ
@@ -392,6 +420,7 @@ object CronetManager {
         var encoding: String? = null
         var headerError: Throwable? = null
         var headersStarted = false
+        var ssrfBlocked = false
         // [Codex 指摘] WebView の close() で確実に UrlRequest.cancel() するため AtomicReference で保持
         val currentReq = java.util.concurrent.atomic.AtomicReference<UrlRequest?>(null)
 
@@ -405,6 +434,11 @@ object CronetManager {
                             android.webkit.CookieManager.getInstance().setCookie(urlAtRedirect, entry.value)
                         } catch (_: Throwable) {}
                     }
+                }
+                // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
+                if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
+                    onLog("blocked(ssrf-redirect): $newLocation")
+                    ssrfBlocked = true; req.cancel(); return
                 }
                 req.followRedirect()
             }
@@ -490,6 +524,18 @@ object CronetManager {
                 try { pipeIn.close() } catch (_: Throwable) {}
                 onLog("streamingFetch: failed url=$url error=${headerError?.javaClass?.simpleName}: ${headerError?.message}")
                 return null
+            }
+            // [2026-07-16 SSRF] リダイレクト先遮断でキャンセルした場合は、fallback で再フェッチさせず
+            //   403 空応答を確定で返す（redirect target を WebView 側で再実行させない）。
+            if (ssrfBlocked) {
+                try { pipeIn.close() } catch (_: Throwable) {}
+                try { pipeOut.close() } catch (_: Throwable) {}
+                decrementOnce()
+                onLog("streamingFetch: blocked(ssrf-redirect) url=$url")
+                return android.webkit.WebResourceResponse(
+                    "text/plain", "utf-8", 403, "Forbidden",
+                    HashMap<String, String>(), java.io.ByteArrayInputStream(ByteArray(0))
+                )
             }
             if (!headersStarted) {
                 // onCanceled で latch.countDown された場合

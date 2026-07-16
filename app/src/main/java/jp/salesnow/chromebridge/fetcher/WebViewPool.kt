@@ -872,11 +872,42 @@ class WebViewPool(
                 // [2026-06-28] Phase 2b: Cronet で subresource (GET/HEAD) を intercept。
                 //   トグル ON 時のみ。Main frame / POST / Range / 非 https は WebView default に戻す。
                 //   Cookie 同期 / redirect は Cronet 内で自動 follow。エラー時は null で WebView fallback。
+                // [2026-07-16 SSRF] main frame ナビゲーション（リダイレクト含む）先が遮断対象なら
+                //   キャンセル（多層防御）。主防御は worker thread の shouldInterceptRequest 側。
+                //   本コールバックは UI thread なので DNS を伴わない peekBlocked() を使う
+                //   （scheme 遮断と判定済み host のみ即キャンセル。未判定 host は shouldInterceptRequest に委ねる）。
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest?
+                ): Boolean {
+                    val u = try { request?.url?.toString() } catch (_: Exception) { null }
+                    if (SsrfGuard.peekBlocked(u, System.currentTimeMillis())) {
+                        val h = try { request?.url?.host } catch (_: Exception) { null }
+                        onLog("blocked(nav-ssrf): ${h ?: "?"}")
+                        return true // ナビゲーションをキャンセル
+                    }
+                    return false // 既定の遷移を許可
+                }
+
                 override fun shouldInterceptRequest(
                     view: WebView?,
                     httpReq: android.webkit.WebResourceRequest?
                 ): android.webkit.WebResourceResponse? {
                     if (httpReq == null) return null
+
+                    // [2026-07-16 SSRF] レンダリング中の全リクエスト（サブリソース/iframe/XHR/
+                    //   リダイレクト・main frame 含む）を検査。private/link-local/metadata/localhost/
+                    //   非 http(s)/file 等は Cronet トグルに依らず遮断する。
+                    val ssrfUrl = try { httpReq.url?.toString() } catch (_: Exception) { null }
+                    if (SsrfGuard.isBlocked(ssrfUrl, System.currentTimeMillis())) {
+                        val h = try { httpReq.url?.host } catch (_: Exception) { null }
+                        onLog("blocked(ssrf): ${h ?: "?"}")
+                        return android.webkit.WebResourceResponse(
+                            "text/plain", "utf-8", 403, "Forbidden",
+                            HashMap<String, String>(), java.io.ByteArrayInputStream(ByteArray(0))
+                        )
+                    }
+
                     val cronetEnabled = try {
                         jp.salesnow.chromebridge.data.SettingsRepository(context).cronetIntercept
                     } catch (_: Exception) { false }
