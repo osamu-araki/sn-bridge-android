@@ -120,8 +120,9 @@ object CronetManager {
             val callback = object : UrlRequest.Callback() {
                 override fun onRedirectReceived(req: UrlRequest, info: UrlResponseInfo, newLocation: String) {
                     // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
-                    if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
-                        onLog("blocked(ssrf-redirect): $newLocation")
+                    val v = SsrfGuard.evaluate(newLocation, System.currentTimeMillis())
+                    if (v.blocked) {
+                        onLog("blocked(ssrf-redirect): $newLocation [${v.reason ?: "-"}]")
                         ssrfBlocked = true; req.cancel(); return
                     }
                     req.followRedirect()
@@ -258,8 +259,9 @@ object CronetManager {
                         }
                     }
                     // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
-                    if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
-                        onLog("blocked(ssrf-redirect): $newLocation")
+                    val v = SsrfGuard.evaluate(newLocation, System.currentTimeMillis())
+                    if (v.blocked) {
+                        onLog("blocked(ssrf-redirect): $newLocation [${v.reason ?: "-"}]")
                         ssrfBlocked = true; req.cancel(); return
                     }
                     req.followRedirect()
@@ -436,8 +438,9 @@ object CronetManager {
                     }
                 }
                 // [2026-07-16 SSRF] リダイレクト先が private/loopback/metadata 等なら follow せずキャンセル。
-                if (SsrfGuard.isBlocked(newLocation, System.currentTimeMillis())) {
-                    onLog("blocked(ssrf-redirect): $newLocation")
+                val v = SsrfGuard.evaluate(newLocation, System.currentTimeMillis())
+                if (v.blocked) {
+                    onLog("blocked(ssrf-redirect): $newLocation [${v.reason ?: "-"}]")
                     ssrfBlocked = true; req.cancel(); return
                 }
                 req.followRedirect()

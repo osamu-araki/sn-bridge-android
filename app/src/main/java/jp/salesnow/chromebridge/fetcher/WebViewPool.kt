@@ -881,9 +881,10 @@ class WebViewPool(
                     request: android.webkit.WebResourceRequest?
                 ): Boolean {
                     val u = try { request?.url?.toString() } catch (_: Exception) { null }
-                    if (SsrfGuard.peekBlocked(u, System.currentTimeMillis())) {
+                    val navVerdict = SsrfGuard.peekEvaluate(u, System.currentTimeMillis())
+                    if (navVerdict.blocked) {
                         val h = try { request?.url?.host } catch (_: Exception) { null }
-                        onLog("blocked(nav-ssrf): ${h ?: "?"}")
+                        onLog("blocked(nav-ssrf): ${h ?: "?"} [${navVerdict.reason ?: "-"}]")
                         return true // ナビゲーションをキャンセル
                     }
                     return false // 既定の遷移を許可
@@ -899,9 +900,11 @@ class WebViewPool(
                     //   リダイレクト・main frame 含む）を検査。private/link-local/metadata/localhost/
                     //   非 http(s)/file 等は Cronet トグルに依らず遮断する。
                     val ssrfUrl = try { httpReq.url?.toString() } catch (_: Exception) { null }
-                    if (SsrfGuard.isBlocked(ssrfUrl, System.currentTimeMillis())) {
+                    val ssrfVerdict = SsrfGuard.evaluate(ssrfUrl, System.currentTimeMillis())
+                    if (ssrfVerdict.blocked) {
                         val h = try { httpReq.url?.host } catch (_: Exception) { null }
-                        onLog("blocked(ssrf): ${h ?: "?"}")
+                        // [2026-07-16] 診断: 遮断理由（DNS 解決先 IP を含む）をログに添える
+                        onLog("blocked(ssrf): ${h ?: "?"} [${ssrfVerdict.reason ?: "-"}]")
                         return android.webkit.WebResourceResponse(
                             "text/plain", "utf-8", 403, "Forbidden",
                             HashMap<String, String>(), java.io.ByteArrayInputStream(ByteArray(0))
